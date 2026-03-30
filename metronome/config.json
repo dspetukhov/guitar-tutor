@@ -1,0 +1,19 @@
+{
+  "beat_file": "Perc_Castanet_lo.wav",
+  "audio_device": {
+    "name": "default",
+    "backend": "auto"
+  },
+  "bpm_noise": 3,
+  "duration_noise": 1,
+  "segments": [
+    { "duration_minutes": 5, "bpm": 45 },
+    { "duration_minutes": 5, "bpm": 55 },
+    { "duration_minutes": 4, "bpm": 65 },
+    { "duration_minutes": 4, "bpm": 75 },
+    { "duration_minutes": 3, "bpm": 85 },
+    { "duration_minutes": 3, "bpm": 95 },
+    { "duration_minutes": 3, "bpm": 105 }
+  ]
+}
+
