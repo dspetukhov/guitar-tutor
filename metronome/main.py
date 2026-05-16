@@ -13,7 +13,7 @@ import sys
 import json
 import logging
 from pathlib import Path
-from player import MetronomePlayer
+from player import _load_beat, _add_amplitude, play
 
 DEFAULT_CONFIG = "config.json"
 
@@ -28,6 +28,7 @@ def load_config(path: str) -> dict:
         sys.exit(1)
     with config_path.open() as file:
         config = json.load(file)
+        logging.info(f"Config loaded: {config_path}")
     return config
 
 
@@ -35,10 +36,13 @@ def main() -> None:
     config_path = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_CONFIG
     config = load_config(config_path)
 
-    logging.info(f"Loaded config     : {config_path}")
-    logging.info(f"Beat file         : {config.get('beat_file', '<not set>')}")
-    logging.info(f"BPM amplitude     : ±{config.get('bpm_amplitude', 0)}")
-    logging.info(f"Duration amplitude: ±{config.get('duration_amplitude', 0)} min")
+    beat_audio = _load_beat(config.get("beat_file"))
+
+    bpm_amplitude = config.get('bpm_amplitude', 0)
+    duration_amplitude = config.get('duration_amplitude', 0)
+    logging.info(f"BPM amplitude     : ±{bpm_amplitude}")
+    logging.info(f"Duration amplitude: ±{duration_amplitude} min")
+
     if config.get("segments"):
         logging.info(f"Segments          : {len(config['segments'])}")
         for i, seg in enumerate(config.get("segments", []), start=1):
@@ -54,12 +58,15 @@ def main() -> None:
                 )
                 continue
 
-            logging.info(f"  [{i}] {seg['duration_minutes']} min - {seg['bpm']} BPM")
+            bpm = _add_amplitude(seg["bpm"], bpm_amplitude)
+            duration_minutes = _add_amplitude(seg["duration_minutes"], duration_amplitude, 0.1)
+            logging.info(f"  [{i}] {duration_minutes} min - {bpm} BPM")
+
+            play(bpm, duration_minutes, beat_audio)
+        sd.stop()
+        logging.info("All segments finished - metronome done.")
     else:
         raise ValueError("segments aren't specified - nothing to play")
-
-    player = MetronomePlayer(config)
-    player.run()
 
 
 if __name__ == "__main__":
