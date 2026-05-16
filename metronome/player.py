@@ -38,12 +38,22 @@ class MetronomePlayer:
     """Configurable metronome player."""
 
     def __init__(self, config: dict) -> None:
-        self.beat_file = Path(config["beat_file"])
+        self.beat_file_path = Path(config["beat_file"]).as_posix()
         self.segments = config["segments"]  # list of {duration_minutes, bpm}
         self.bpm_amplitude = config.get("bpm_amplitude", 0)
         self.duration_amplitude = config.get("duration_amplitude", 0)
         self._beat_data: np.ndarray | None = None
         self._sample_rate: int | None = None
+
+    @staticmethod
+    def _setup_audio_backend() -> bool:
+        """Reset sounddevice to auto-select best available backend."""
+        try:
+            sd.default.reset()
+            return True
+        except Exception as exc:
+            logging.error(f"Audio backend error: {exc}")
+            return False
 
     # Noise helpers
 
@@ -64,26 +74,26 @@ class MetronomePlayer:
     # Audio helpers
 
     def _load_beat(self) -> bool:
-        """Load the beat WAV file into self._beat_data.  Returns success flag."""
+        """Load the beat file into self._beat_audio_data.
+        Returns success flag.
+        """
         try:
-            data, sr = sf.read(str(self.beat_file), dtype="float32", always_2d=True)
-            self._beat_data   = data
-            self._sample_rate = sr
-            logging.info("Beat file loaded: %s  (%d Hz, %d samples, %d ch)",
-                     self.beat_file, sr, data.shape[0], data.shape[1])
+            data, sample_rate = sf.read(
+                self.beat_file_path,
+                dtype="float32",
+                always_2d=True
+            )
+            self._beat_audio_data = data
+            self._sample_rate = sample_rate
+            logging.info(
+                f"Beat audio file loaded: {self.beat_file_path}"
+                f"({data.shape[0]} samples; {sample_rate} Hz )"
+            )
             return True
         except Exception as exc:
-            logging.error("Cannot load beat file '%s': %s", self.beat_file, exc)
-            return False
-
-    @staticmethod
-    def _setup_audio_backend() -> bool:
-        """Reset sounddevice to auto-select best available backend."""
-        try:
-            sd.default.reset()
-            return True
-        except Exception as exc:
-            logging.error("Audio backend error: %s", exc)
+            logging.error(
+                f"Cannot load beat audio file: {self.beat_file_path}: {exc}"
+            )
             return False
 
     def _play_beat(self) -> None:
