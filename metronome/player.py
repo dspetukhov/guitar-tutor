@@ -18,34 +18,20 @@ Noise:
                       by uniform(-duration_amplitude, +duration_amplitude).
 """
 
-import time
-import random
 import logging
 import sounddevice as sd
-import soundfile   as sf
-import numpy       as np
-# from pathlib import Path
+import soundfile as sf
+from numpy import ndarray
+from random import uniform
+from time import sleep
+from typing import Tuple
 
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s  %(levelname)-8s  %(message)s",
-    datefmt="%H:%M:%S",
+    format="%(asctime)s %(levelname)s %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S"
 )
-# log = logging.getLogger(__name__)
 
-
-# class MetronomePlayer:
-#     """Configurable metronome player."""
-
-#     def __init__(self, config: dict) -> None:
-#         self.beat_file_path = Path(config["beat_file"]).as_posix()
-#         self.segments = config["segments"]  # list of {duration_minutes, bpm}
-#         self.bpm_amplitude = config.get("bpm_amplitude", 0)
-#         self.duration_amplitude = config.get("duration_amplitude", 0)
-#         self._beat_data: np.ndarray | None = None
-#         self._sample_rate: int | None = None
-
-    # @staticmethod
 
 def _setup_audio_backend() -> bool:
     """Reset sounddevice to auto-select best available backend."""
@@ -59,43 +45,28 @@ def _setup_audio_backend() -> bool:
 
 # Audio helpers
 
-
-def _load_beat(beat_file_path) -> np.ndarray | None:
-    """Load the beat file. Returns success flag.
+def load_beat(beat_file_path) -> Tuple[ndarray, int] | None:
+    """Load the beat audio file.
     """
     try:
         data, sample_rate = sf.read(
-            beat_file_path,
+            beat_file_path.as_posix(),
             dtype="float32",
             always_2d=True
         )
         logging.info(
-            f"Beat audio file loaded: {beat_file_path}"
-            f"({data.shape[0]} samples; {sample_rate} Hz )"
+            f"Beat audio file loaded: {beat_file_path.resolve()} "
+            f"({data.shape[0]:,} samples; {sample_rate:,} Hz)"
         )
-        return data
+        return data, sample_rate
     except Exception as exc:
-        logging.error(
-            f"Cannot load beat audio file: {beat_file_path}: {exc}"
-        )
-
-
-def _play_beat(self) -> None:
-    """
-    Fire one beat - NON-BLOCKING.
-
-    Any previously-playing beat is stopped first so that beats
-    never overlap, even when the beat sound is longer than the
-    inter-beat interval.
-    """
-    sd.stop()                                       # cut off any prior beat
-    sd.play(self._beat_data, self._sample_rate)     # non-blocking
-
+        raise Exception(
+            f"Cannot load beat audio file: {beat_file_path}: {exc}")
 
 # Noise helpers
 
 
-def _add_amplitude(
+def add_amplitude(
         value: int | float,
         amplitude: int | float,
         clamp: int | float = 1.0
@@ -103,14 +74,14 @@ def _add_amplitude(
     """Return value ± random offset, clamped by `clamp` variable."""
     if amplitude <= 0:
         return value
-    new_value = value + random.uniform(-amplitude, amplitude)
+    new_value = value + uniform(-amplitude, amplitude)
     return max(clamp, new_value)
 
 
 # Core loop
 
 
-def play(seg_bpm, seg_duration, beat_audio):
+def play(seg_bpm, seg_duration, beat_audio, sample_rate):
     """
     Execute all segments sequentially.
 
@@ -128,63 +99,13 @@ def play(seg_bpm, seg_duration, beat_audio):
     if not _setup_audio_backend():
         return
 
-    seg_duration_seconds = seg_duration * 60
-    beat_interval = 60 / seg_bpm  # seconds between beats
+    beats_count = int(seg_bpm * seg_duration)
+    beat_duration = round(60 / seg_bpm, 4)
 
-    logging.info(
-        "Segment %d/%d: %.1f BPM (base %d) for %.2f min (base %d)  "
-        "(beat every %.3f s)",
-        idx, total_segments, eff_bpm, base_bpm,
-        eff_duration, base_duration, beat_interval,
-    )
-    print(
-        f"\n▶  Segment {idx}/{total_segments}: "
-        f"{eff_bpm:.1f} BPM (base {base_bpm})  "
-        f"for {eff_duration:.2f} min (base {base_duration})",
-        flush=True,
-    )
+    for _ in range(beats_count):
+        # Play beat (non-blocking, stops any prior sound first)
+        sd.stop()                           # cut off any prior beat
+        sd.play(beat_audio, sample_rate)    # non-blocking
+        sleep(beat_duration - 1e-6)
 
-    segment_start = time.perf_counter()
-    beat_index    = 0
-
-        while True:
-            # Time when this beat SHOULD fire (drift-corrected)
-            scheduled_time = segment_start + beat_index * beat_interval
-            now = time.perf_counter()
-
-            # Segment finished?
-            if now - segment_start >= duration_seconds:
-                break
-
-            # Wait until it is time for the next beat
-            wait = scheduled_time - now
-            if wait > 0:
-                time.sleep(wait)
-
-            # Play beat (non-blocking, stops any prior sound first)
-            self._play_beat()
-            beat_index += 1
-
-        # Smooth transition
-        # Wait out the remainder of the last beat interval so the
-        # first beat of the next segment doesn't collide with the
-        # last beat of this one.
-        if beat_index > 0:
-            last_beat_time = segment_start + (beat_index - 1) * beat_interval
-            elapsed_since_last = time.perf_counter() - last_beat_time
-            remaining = beat_interval - elapsed_since_last
-            if remaining > 0:
-                time.sleep(remaining)
-
-        logging.info("Segment %d/%d complete.", idx, total_segments)
-
-except KeyboardInterrupt:
     sd.stop()
-    logging.info("Metronome stopped by user.")
-except Exception as exc:
-    sd.stop()
-    logging.error("Unexpected error: %s", exc)
-    raise
-
-sd.stop()
-logging.info("All segments finished - metronome done.")
