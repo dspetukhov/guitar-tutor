@@ -21,9 +21,8 @@ Noise:
 import logging
 import sounddevice as sd
 import soundfile as sf
-from numpy import ndarray
+from numpy import ndarray, zeros
 from random import uniform
-from time import sleep
 from typing import Tuple
 
 logging.basicConfig(
@@ -80,32 +79,22 @@ def add_amplitude(
 
 # Core loop
 
-
-def play(seg_bpm, seg_duration, beat_audio, sample_rate):
-    """
-    Execute all segments sequentially.
-
-    For each segment the metronome:
-        1. Applies noise to BPM and duration.
-        2. Announces effective BPM and duration.
-        3. Fires sd.play() every (60 / effective_bpm) seconds for
-            (effective_duration * 60) seconds total.
-        4. Corrects timing drift by anchoring each beat to
-            the segment start time.
-        5. At segment boundaries, waits for the remainder of the
-            last beat interval before starting the next segment,
-            ensuring a smooth transition with no overlap.
-    """
+def play(bpm, duration, audio, sample_rate):
+    """."""
     if not _setup_audio_backend():
         return
 
-    beats_count = int(seg_bpm * seg_duration)
-    beat_duration = round(60 / seg_bpm, 4)
+    samples = int(60 * sample_rate * duration)
+    channels = audio.shape[1]
+    buffer = zeros((samples, channels), dtype=audio.dtype)
 
-    for _ in range(beats_count):
-        # Play beat (non-blocking, stops any prior sound first)
-        sd.stop()                           # cut off any prior beat
-        sd.play(beat_audio, sample_rate)    # non-blocking
-        sleep(beat_duration - 1e-6)
+    interval_length = int(sample_rate * 60 / bpm)  # maximum length of a beat according to BPM
+    beat_length = min(audio.shape[0], interval_length)  # truncate if beat length > maximum allowed interval length
 
-    sd.stop()
+    for pos in range(0, samples, interval_length):
+        if pos + beat_length > samples:
+            break
+        buffer[pos: pos + beat_length, :] = audio[:beat_length, :]
+
+    sd.play(buffer, sample_rate)
+    sd.wait()
