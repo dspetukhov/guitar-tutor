@@ -10,7 +10,7 @@ logging.basicConfig(
 )
 
 waveform, sample_rate = librosa.load("Time On My Hands.wav", sr=None, mono=True)
-logging.info("Waveform: {waveform.shape:,} | Sample rate: {sample_rate:,}")
+logging.info(f"Waveform: {waveform.shape} | Sample rate: {sample_rate:,}")
 
 hop_length = 512
 chroma = librosa.feature.chroma_cqt(
@@ -19,11 +19,11 @@ chroma = librosa.feature.chroma_cqt(
     bins_per_octave=36
 )
 chroma = librosa.util.normalize(chroma, axis=0)
-logging.info("Chroma: {chroma.shape}")
+logging.info(f"Chroma: {chroma.shape}")
 
 PITCHES = "C C# D D# E F F# G G# A A# B".split()
 CHORDS = [f"{p}:{q}" for q in ("maj", "min") for p in PITCHES]
-logging.info("Chords: {CHORDS}")
+logging.info(f"Chords: {CHORDS}")
 
 
 def chord_templates():
@@ -49,11 +49,9 @@ def chord_templates():
 
 
 T = chord_templates()
-logging.info("Template: {T.shape}")
+logging.info(f"Template: {T.shape}")
 
 scores = T @ chroma  # (24, frames)
-predictions = np.argmax(scores, axis=0)
-times = np.arange(predictions.size) * (hop_length / sample_rate)
 
 
 def prediction_to_triad(item):
@@ -62,15 +60,13 @@ def prediction_to_triad(item):
     return f"{PITCHES[root]}:{qual}"
 
 
+vfunc = np.vectorize(prediction_to_triad, otypes=[str])
+predictions = vfunc(np.argmax(scores, axis=0))
+times = np.arange(predictions.size) * (hop_length / sample_rate)
+
 output = pl.DataFrame({
-    "S": times[:-1].round(3),
-    "E": np.roll(times, -1)[:-1].round(3),
-    "Triad": predictions[:-1]
-}).with_columns(
-    pl.col("Triad").map_elements(
-        lambda item: prediction_to_triad(item),
-        return_dtype=pl.String
-    )
-)
+    "Time": times.round(4),
+    "Triad": predictions
+})
 
 output.write_csv("test.csv")
