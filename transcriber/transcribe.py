@@ -1,7 +1,9 @@
+import sys
+import json
 import logging
 import numpy as np
 import librosa
-import polars as pl
+from pathlib import Path
 
 logging.basicConfig(
     level=logging.INFO,
@@ -9,8 +11,17 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S"
 )
 
-waveform, sample_rate = librosa.load("Time On My Hands.wav", sr=None, mono=True)
-logging.info(f"Waveform: {waveform.shape} | Sample rate: {sample_rate:,}")
+audio_file_path = Path("Time On My Hands.wav")
+
+if audio_file_path.is_file():
+    waveform, sample_rate = librosa.load(
+        audio_file_path.as_posix(),
+        sr=None,
+        mono=True
+    )
+    logging.info(f"Waveform: {waveform.shape} | Sample rate: {sample_rate:,}")
+else:
+    sys.exit(1)
 
 hop_length = 512
 chroma = librosa.feature.chroma_cqt(
@@ -61,12 +72,22 @@ def prediction_to_triad(item):
 
 
 vfunc = np.vectorize(prediction_to_triad, otypes=[str])
-predictions = vfunc(np.argmax(scores, axis=0))
-times = np.arange(predictions.size) * (hop_length / sample_rate)
+predictions = np.argmax(scores, axis=0)
+_frames = (np.arange(predictions.size) * hop_length).tolist()
 
-output = pl.DataFrame({
-    "Time": times.round(4),
-    "Triad": predictions
-})
+frames, triads = [], []
 
-output.write_csv("test.csv")
+for s, p in zip(_frames, predictions):
+    if frames and triads and p == triads[-1]:
+        continue
+    frames.append(s)
+    triads.append(p)
+
+output = {
+    "file_path": audio_file_path.resolve().as_posix(),
+    "frame": frames,
+    "triad": vfunc(triads).tolist()
+}
+
+with open("test.json", "w") as file:
+    json.dump(output, file, indent=4, sort_keys=True)
