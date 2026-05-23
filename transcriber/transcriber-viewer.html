@@ -3,49 +3,47 @@
 <head>
   <meta charset="UTF-8">
   <title>Transcriber viewer</title>
+  <style>
+    #waveform-wrapper {
+      position: relative;
+    }
+    #label-scroll {
+      position: absolute;
+      top: 4px;
+      left: 0;
+      right: 0;
+      height: 18px;
+      overflow: hidden;
+      pointer-events: none;
+    }
+  </style>
 </head>
 <body>
 
-<h2>Transcriber viewer</h2>
-<!-- <p id="status">Loading...</p> -->
 <p id="info"></p>
-
-<div id="waveform"></div>
-
-<button id="play-button" disabled >Play</button>
-
-<p>Current triad: <strong id="triad-now">—</strong></p>
+<div id="waveform-wrapper">
+  <div id="waveform"></div>
+  <div id="label-scroll">
+    <canvas id="label-canvas"></canvas>
+  </div>
+</div>
+<br>
+<button id="play-button" disabled>Play</button>
 
 <script type="module">
 import WaveSurfer from 'https://unpkg.com/wavesurfer.js@7/dist/wavesurfer.esm.js'
 import RegionsPlugin from 'https://unpkg.com/wavesurfer.js@7/dist/plugins/regions.esm.js'
 import TimelinePlugin from 'https://unpkg.com/wavesurfer.js@7/dist/plugins/timeline.esm.js'
 
-const NOTE_HUE = {
-  'C': 200, 'C#': 230, 'D': 260, 'D#': 290,
-  'E': 320, 'F':  350, 'F#':  20, 'G':   50,
-  'G#': 80, 'A':  110, 'A#': 140, 'B':  170
+function triadColor(triad) {
+  const quality = triad.split(':')[1]
+  return quality === 'maj'
+    ? 'rgba(255, 204, 138, 0.15)'
+    : 'rgba(145, 203, 251, 0.15)'
 }
 
-function triadColor(triad, alpha = 0.5) {
-  const [note, quality] = triad.split(':')
-  const hue = NOTE_HUE[note] ?? 0
-  const sat = quality === 'maj' ? 75 : 50
-  const lit = quality === 'maj' ? 58 : 42
-  return `hsla(${hue},${sat}%,${lit}%,${alpha})`
-}
+const MIN_PX_PER_SEC = 150
 
-function currentTriad(segments, time) {
-  let lo = 0, hi = segments.length - 1
-  while (lo < hi) {
-    const mid = (lo + hi + 1) >> 1
-    if (segments[mid].start <= time) lo = mid
-    else hi = mid - 1
-  }
-  return segments[lo]?.triad ?? '—'
-}
-
-// fetch JSON, then load audio from the path inside it
 const data = await fetch('test.json').then(r => r.json())
 
 const audioCtx = new AudioContext()
@@ -56,58 +54,75 @@ const sampleRate = decoded.sampleRate
 const duration = decoded.duration
 await audioCtx.close()
 
-// document.getElementById('status').textContent = 'Ready.'
+const uniqueTriads = [...new Set(data.segments.map(s => s[2]))]
 document.getElementById('info').textContent =
-  `${data.file_path} — ${sampleRate.toLocaleString()} Hz — ${duration.toFixed(2)}s — ${[...new Set(data.triad)].length} unique triads`
+  `${data.file_path} — ${sampleRate.toLocaleString()} Hz — ${duration.toFixed(2)}s — ${uniqueTriads.length} unique triads`
 
-// build segments
-const segments = data.frame.map((f, i) => ({
-  start: f / sampleRate,
-  end: i + 1 < data.frame.length ? data.frame[i + 1] / sampleRate : duration,
-  triad: data.triad[i],
+const segments = data.segments.map(([startFrame, endFrame, triad]) => ({
+  start: startFrame / sampleRate,
+  end:   endFrame   / sampleRate,
+  triad,
 }))
 
-// const regions = RegionsPlugin.create()
+const regions = RegionsPlugin.create()
 
 const ws = WaveSurfer.create({
   container: '#waveform',
-  waveColor: '#b6b9c0',
+  waveColor: 'rgb(182, 185, 192, 0.4)',
   progressColor: '#6c80b8',
   cursorColor: '#23bcee',
   backgroundColor: '#1a1a1a',
-  height: 360,
+  height: 400,
   barWidth: 2,
   barGap: 0.5,
   barRadius: 0.5,
-  responsive: true,
-  normalize: true,
-  // backend: 'mediaelement',
-  plugins: [TimelinePlugin.create()],
+  minPxPerSec: MIN_PX_PER_SEC,
+  normalize: false,
+  plugins: [regions, TimelinePlugin.create()],
 })
 
 ws.load(data.file_path)
 
 ws.on('ready', () => {
-  document.getElementById("play-button").onclick = () => ws.playPause()
   document.getElementById('play-button').disabled = false
-  // for (const seg of segments) {
-  //   regions.addRegion({
-  //     start: seg.start,
-  //     end: seg.end,
-  //     // color: triadColor(seg.triad),
-  //     drag: false,
-  //     resize: false,
-  //   })
-  // }
+  document.getElementById('play-button').onclick = () => ws.playPause()
+
+  // colored regions — no content, labels handled by canvas
+  for (const seg of segments) {
+    regions.addRegion({
+      start:  seg.start,
+      end:    seg.end,
+      color:  triadColor(seg.triad),
+      drag:   false,
+      resize: false,
+    })
+  }
+
+  // draw labels on canvas with greedy non-overlap placement
+  const canvas = document.getElementById('label-canvas')
+  canvas.width  = Math.ceil(duration * MIN_PX_PER_SEC)
+  canvas.height = 18
+  const ctx = canvas.getContext('2d')
+  ctx.font = 'bold 11px Arial'
+  ctx.fillStyle = 'rgba(0,0,0,0.75)'
+
+  let lastRight = 0
+  for (const seg of segments) {
+    const segStartPx = seg.start * MIN_PX_PER_SEC
+    const labelX = Math.max(segStartPx + 2, lastRight + 4)
+    ctx.fillText(seg.triad, labelX, 13)
+    lastRight = labelX + ctx.measureText(seg.triad).width
+  }
+
+  // sync label strip scroll with waveform scroll
+  ws.getWrapper().addEventListener('scroll', e => {
+    document.getElementById('label-scroll').scrollLeft = e.target.scrollLeft
+  })
 })
 
 ws.on('play',  () => document.getElementById('play-button').textContent = 'Pause')
 ws.on('pause', () => document.getElementById('play-button').textContent = 'Play')
 ws.on('finish',() => document.getElementById('play-button').textContent = 'Play')
-
-ws.on('timeupdate', time => {
-  document.getElementById('triad-now').textContent = currentTriad(segments, time)
-})
 </script>
 
 </body>
