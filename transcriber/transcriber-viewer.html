@@ -12,7 +12,7 @@
       top: 4px;
       left: 0;
       right: 0;
-      height: 18px;
+      height: 50px;
       overflow: hidden;
       pointer-events: none;
     }
@@ -101,10 +101,10 @@ ws.on('ready', () => {
   // draw labels on canvas with greedy non-overlap placement
   const canvas = document.getElementById('label-canvas')
   canvas.width  = Math.ceil(duration * MIN_PX_PER_SEC)
-  canvas.height = 18
+  canvas.height = 50
   const ctx = canvas.getContext('2d')
-  ctx.font = 'bold 11px Arial'
-  ctx.fillStyle = 'rgba(0,0,0,0.75)'
+  ctx.font = 'bold 15px serif'
+  ctx.fillStyle = 'rgba(0, 0, 0)'
 
   let lastRight = 0
   for (const seg of segments) {
@@ -114,10 +114,12 @@ ws.on('ready', () => {
     lastRight = labelX + ctx.measureText(seg.triad).width
   }
 
-  // sync label strip scroll with waveform scroll
-  ws.getWrapper().addEventListener('scroll', e => {
-    document.getElementById('label-scroll').scrollLeft = e.target.scrollLeft
-  })
+  // sync label strip scroll with waveform scroll using WaveSurfer's 'scroll' event
+  ws.on('scroll', (visibleStartTime, _visibleEndTime) => {
+    document.getElementById('label-scroll').scrollLeft =
+      visibleStartTime * MIN_PX_PER_SEC
+    }
+  )
 })
 
 ws.on('play',  () => document.getElementById('play-button').textContent = 'Pause')
