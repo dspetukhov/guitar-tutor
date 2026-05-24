@@ -7,12 +7,15 @@
     #waveform-wrapper {
       position: relative;
     }
+    #waveform ::part(region) {
+      border-left: 0.5px dotted rgb(0, 0, 0, 0.2) !important;
+    }
     #label-scroll {
       position: absolute;
       top: 4px;
       left: 0;
       right: 0;
-      height: 50px;
+      height: 100%;
       overflow: hidden;
       pointer-events: none;
     }
@@ -42,7 +45,11 @@ function triadColor(triad) {
     : 'rgba(145, 203, 251, 0.15)'
 }
 
+const HEIGHT = 400
 const MIN_PX_PER_SEC = 150
+const ROW_HEIGHT = 16
+const LABEL_GAP  = 4
+const LABEL_FONT = '15px serif'
 
 const data = await fetch('test.json').then(r => r.json())
 
@@ -68,11 +75,11 @@ const regions = RegionsPlugin.create()
 
 const ws = WaveSurfer.create({
   container: '#waveform',
-  waveColor: 'rgb(182, 185, 192, 0.4)',
+  waveColor: 'rgb(182, 185, 192, 0.3)',
   progressColor: '#6c80b8',
   cursorColor: '#23bcee',
   backgroundColor: '#1a1a1a',
-  height: 400,
+  height: HEIGHT,
   barWidth: 2,
   barGap: 0.5,
   barRadius: 0.5,
@@ -99,19 +106,41 @@ ws.on('ready', () => {
   }
 
   // draw labels on canvas with greedy non-overlap placement
-  const canvas = document.getElementById('label-canvas')
+  const canvas = document.getElementById('label-canvas');
   canvas.width  = Math.ceil(duration * MIN_PX_PER_SEC)
-  canvas.height = 50
-  const ctx = canvas.getContext('2d')
-  ctx.font = 'bold 15px serif'
+  canvas.height = HEIGHT
+  const ctx     = canvas.getContext('2d')
+  ctx.font      = LABEL_FONT
   ctx.fillStyle = 'rgba(0, 0, 0)'
+  // ctx.setTransform(ratio, 0, 0, ratio, 0, 0)
+
+  console.log(canvas.width, canvas.height);
+
+  // ctx.imageSmoothingEnabled = false;
+  // ctx.mozImageSmoothingEnabled = false;
+  // ctx.webkitImageSmoothingEnabled = false;
+  // ctx.msImageSmoothingEnabled = false;
 
   let lastRight = 0
+  let shift = -1
+
+  const measure = document.createElement('canvas').getContext('2d')
+  measure.font = LABEL_FONT
+
   for (const seg of segments) {
-    const segStartPx = seg.start * MIN_PX_PER_SEC
-    const labelX = Math.max(segStartPx + 2, lastRight + 4)
-    ctx.fillText(seg.triad, labelX, 13)
-    lastRight = labelX + ctx.measureText(seg.triad).width
+    const start = seg.start * MIN_PX_PER_SEC
+    const width = measure.measureText(seg.triad).width
+    const end   = seg.end * MIN_PX_PER_SEC
+
+    if (lastRight > start) {
+      shift = shift + 1;
+    } else {
+      shift = 0;
+    }
+
+    // console.log(shift, start, end, width, lastRight, start + width, seg.triad)
+    ctx.fillText(seg.triad, start + 1, ROW_HEIGHT + ROW_HEIGHT * shift)
+    lastRight = start + width
   }
 
   // sync label strip scroll with waveform scroll using WaveSurfer's 'scroll' event
