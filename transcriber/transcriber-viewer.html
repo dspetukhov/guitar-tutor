@@ -6,6 +6,10 @@
   <style>
     #waveform-wrapper {
       position: relative;
+      contain: layout paint style;
+    }
+    #waveform, #label-canvas {
+      will-change: transform, opacity;
     }
     #waveform ::part(region) {
       border-left: 0.5px dotted rgb(0, 0, 0, 0.2) !important;
@@ -19,14 +23,6 @@
       overflow: hidden;
       pointer-events: none;
     }
-    #window-controls {
-      /* display: flex; */
-      align-items: center;
-      gap: 6px;
-      /* margin-bottom: 6px; */
-      /* font-family: sans-serif; */
-      /* font-size: 13px; */
-    }
   </style>
 </head>
 <body>
@@ -39,18 +35,11 @@
   </div>
 </div>
 <br>
-<div id="window-controls">
-  <span>Window:</span>
-  <button class="length-button" data-sec="5">5s</button>
-  <button class="length-button" data-sec="10">10s</button>
-  <button class="length-button" data-sec="15">15s</button>
-  <button class="length-button active" data-sec="20">20s</button>
-  <button class="length-button" data-sec="25">25s</button>
-  <button class="length-button" data-sec="30">30s</button>
-  <!-- <button class="length-button" data-sec="45">45s</button> -->
-  <!-- <button class="length-button" data-sec="60">60s</button> -->
+<div id="controls" style="display:flex; align-items:center; gap:8px; margin-top:6px;">
+  <button id="play-button" disabled>Play</button>
+  <!-- <span style="color:#aaa;">Speed:</span> -->
+  <div id="speed-buttons" style="display:flex; gap:4px;"></div>
 </div>
-<button id="play-button" disabled>Play</button>
 
 <script type="module">
 import WaveSurfer from 'https://unpkg.com/wavesurfer.js@7/dist/wavesurfer.esm.js'
@@ -65,16 +54,13 @@ function triadColor(triad) {
 }
 
 const HEIGHT = 400
+const MIN_PX_PER_SEC = 150
 const ROW_HEIGHT = 16
 const LABEL_FONT = '15px serif'
 
-let windowSeconds = 15   // matches the default .active button
-
-// Derive px/sec from the container width and chosen window length.
-function calcPxPerSec() {
-  const containerWidth = document.getElementById('waveform').clientWidth || window.innerWidth
-  return containerWidth / windowSeconds
-}
+// Speed buttons — 100% down to 50% in 5% steps
+const speeds = [1.00, 0.90, 0.80, 0.70, 0.60, 0.50]
+let activeSpeed = 1.00
 
 const data = await fetch('test.json').then(r => r.json())
 
@@ -108,42 +94,38 @@ const ws = WaveSurfer.create({
   barWidth: 2,
   barGap: 0.5,
   barRadius: 0.5,
-  minPxPerSec: calcPxPerSec(),
+  minPxPerSec: MIN_PX_PER_SEC,
   normalize: false,
   plugins: [regions, TimelinePlugin.create()],
 })
 
-ws.load(data.file_path)
+const speedContainer = document.getElementById('speed-buttons')
 
-// Redraws the label canvas for a given px/sec value.
-function drawLabels(pxPerSec) {
-  const canvas = document.getElementById('label-canvas')
-  canvas.width  = Math.ceil(duration * pxPerSec)
-  canvas.height = HEIGHT
-  const ctx     = canvas.getContext('2d')
-  ctx.font      = LABEL_FONT
-  ctx.fillStyle = 'rgba(0, 0, 0)'
-
-  const measure = document.createElement('canvas').getContext('2d')
-  measure.font  = LABEL_FONT
-
-  let lastRight = 0
-  let shift     = -1
-
-  for (const seg of segments) {
-    const start = seg.start * pxPerSec
-    const width = measure.measureText(seg.triad).width
-
-    if (lastRight > start) {
-      shift = shift + 1
-    } else {
-      shift = 0
-    }
-
-    ctx.fillText(seg.triad, start + 1, ROW_HEIGHT + ROW_HEIGHT * shift)
-    lastRight = start + width
+for (const rate of speeds) {
+  const button = document.createElement('button')
+  button.textContent = `${Math.round(rate * 100)}%`
+  button.dataset.rate = rate
+  button.style.cssText = `
+    padding: 2px 7px;
+    font-size: 13px;
+    cursor: pointer;
+    border-radius: 3px;
+    background: ${rate === 1.00 ? '#4a6fa5' : '#2a2a2a'};
+    color: ${rate === 1.00 ? '#fff' : '#ccc'};
+  `
+  button.onclick = () => {
+    activeSpeed = rate
+    ws.setPlaybackRate(rate, true)
+    speedContainer.querySelectorAll('button').forEach(b => {
+      const isActive = parseFloat(b.dataset.rate) === rate
+      b.style.background = isActive ? '#4a6fa5' : '#2a2a2a'
+      b.style.color       = isActive ? '#fff'    : '#ccc'
+    })
   }
+  speedContainer.appendChild(button)
 }
+
+ws.load(data.file_path)
 
 ws.on('ready', () => {
   document.getElementById('play-button').disabled = false
@@ -160,29 +142,48 @@ ws.on('ready', () => {
     })
   }
 
-  drawLabels(calcPxPerSec())
+  // draw labels on canvas with greedy non-overlap placement
+  const canvas = document.getElementById('label-canvas');
+  canvas.width  = Math.ceil(duration * MIN_PX_PER_SEC)
+  canvas.height = HEIGHT
+  const ctx     = canvas.getContext('2d')
+  ctx.font      = LABEL_FONT
+  ctx.fillStyle = 'rgba(0, 0, 0)'
 
-  // Sync label strip scroll with waveform scroll.
-  ws.on('scroll', (visibleStartTime) => {
+  let lastRight = 0
+  let shift = -1
+
+  const measure = document.createElement('canvas').getContext('2d')
+  measure.font = LABEL_FONT
+
+  for (const seg of segments) {
+    const start = seg.start * MIN_PX_PER_SEC
+    const width = measure.measureText(seg.triad).width
+    const end   = seg.end * MIN_PX_PER_SEC
+
+    if (lastRight > start) {
+      shift = shift + 1;
+    } else {
+      shift = 0;
+    }
+
+    ctx.fillText(seg.triad, start + 1, ROW_HEIGHT + ROW_HEIGHT * shift)
+    lastRight = start + width
+  }
+
+  button.onclick = () => {
+    activeSpeed = rate
+    if (rate !== 1.00) ws.setPlaybackRate(rate, true)
+    else ws.setPlaybackRate(1.00)   // no need for pitch-preservation at normal speed
+    // update highlights...
+  }
+
+  // sync label strip scroll with waveform scroll using WaveSurfer's 'scroll' event
+  ws.on('scroll', (visibleStartTime, _visibleEndTime) => {
     document.getElementById('label-scroll').scrollLeft =
-      visibleStartTime * calcPxPerSec()
-  })
-})
-
-// Window-length button handling.
-document.getElementById('window-controls').addEventListener('click', e => {
-  const button = e.target.closest('.length-button')
-  if (!button) return
-
-  // Update active state.
-  document.querySelectorAll('.length-button').forEach(b => b.classList.remove('active'))
-  button.classList.add('active')
-
-  windowSeconds = Number(button.dataset.sec)
-  const pxPerSec = calcPxPerSec()
-
-  ws.zoom(pxPerSec)
-  drawLabels(pxPerSec)
+      visibleStartTime * MIN_PX_PER_SEC
+    }
+  )
 })
 
 ws.on('play',  () => document.getElementById('play-button').textContent = 'Pause')
