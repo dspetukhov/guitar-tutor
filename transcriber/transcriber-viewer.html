@@ -72,7 +72,12 @@ const sampleRate = decoded.sampleRate
 const duration = decoded.duration
 await audioCtx.close()
 
-const uniqueTriads = [...new Set(data.segments.map(s => s[2]))]
+const triadMap = {}
+for (const seg of data.segments) {
+  triadMap[seg[2]] = true
+}
+const uniqueTriads = Object.keys(triadMap)
+
 document.getElementById('info').textContent =
   `${data.file_path} — ${sampleRate.toLocaleString()} Hz — ${duration.toFixed(2)}s — ${uniqueTriads.length} unique triads`
 
