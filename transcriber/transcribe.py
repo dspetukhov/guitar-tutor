@@ -69,31 +69,49 @@ logging.info(f"Chords: {CHORDS}")
 
 
 def chord_templates():
-    # 12-dim pitch-class templates for maj/min triads
+    # 12-dim pitch-class templates for triads
     NP = len(PITCHES)
     I = np.arange(NP)
-    T = []
+    T, L = [], []
+    tol = 1e-9
     for root in range(NP):
-        # major: {0,4,7}; minor: {0,3,7}
+        # major: 0,4,7; minor: 0,3,7
         c_maj = np.isin(
             I,
             [(root) % NP, (root+4) % NP, (root+7) % NP]
         ).astype(float)
-        c_maj /= np.linalg.norm(c_maj) + 1e-9
+        c_maj /= np.linalg.norm(c_maj) + tol
         c_min = np.isin(
             I,
             [(root) % NP, (root+3) % NP, (root+7) % NP]
         ).astype(float)
-        c_min /= np.linalg.norm(c_min) + 1e-9
+        c_min /= np.linalg.norm(c_min) + tol
+        c_dim = np.isin(
+            I,
+            [(root) % NP, (root+3) % NP, (root+6) % NP]
+        ).astype(float)
+        c_dim /= np.linalg.norm(c_dim) + tol
+        c_aug = np.isin(
+            I,
+            [(root) % NP, (root+4) % NP, (root+8) % NP]
+        ).astype(float)
+        c_aug /= np.linalg.norm(c_aug) + tol
         T.append(c_maj)
+        L.append(f"{PITCHES[root]}:maj")
         T.append(c_min)
-    return np.stack(T, axis=0)  # (24, 12)
+        L.append(f"{PITCHES[root]}:min")
+        T.append(c_dim)
+        L.append(f"{PITCHES[root]}:dim")
+        T.append(c_aug)
+        L.append(f"{PITCHES[root]}:aug")
+    return np.stack(T, axis=0), L  # (48, 12)
 
 
-T = chord_templates()
-logging.info(f"Template: {T.shape}")
+T, L = chord_templates()
+logging.info(f"Template: {T.shape} | Labels: {L}")
 
-scores = T @ chroma  # (24, frames)
+# Get harmony lane raw estimates
+scores = T @ chroma  # -> (24, frames)
 
 
 def prediction_to_triad(item):
