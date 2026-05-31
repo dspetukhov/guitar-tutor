@@ -54,15 +54,6 @@ if audio_file_path.is_file():
 else:
     sys.exit(1)
 
-hop_length = 28480
-chroma = librosa.feature.chroma_cqt(
-    y=waveform, sr=sample_rate,
-    hop_length=hop_length,
-    bins_per_octave=84
-)
-chroma = librosa.util.normalize(chroma, axis=0)
-logging.info(f"Chroma: {chroma.shape}")
-
 PITCHES = "C C# D D# E F F# G G# A A# B".split()
 CHORDS = [f"{p}:{q}" for q in ("maj", "min") for p in PITCHES]
 logging.info(f"Chords: {CHORDS}")
@@ -96,24 +87,53 @@ def chord_templates():
 T, L = chord_templates()
 logging.info(f"Template: {T.shape} | Labels: {L}")
 
-# Get harmony lane raw estimates
-scores = T @ chroma  # -> (24, frames)
+# Get harmony lane
+hop_length = 28480
+chroma = librosa.feature.chroma_cqt(
+    y=waveform, sr=sample_rate,
+    hop_length=hop_length,
+    bins_per_octave=84
+)
+chroma = librosa.util.normalize(chroma, axis=0)
+logging.info(f"Chroma: {chroma.shape}")
+
+scores = T @ chroma  # raw estimates
+
+# Smooth predictions?
+predictions = np.argmax(scores, axis=0)
+frames = (np.arange(predictions.size) * hop_length / sample_rate).tolist()
+
+frame_time = hop_length / sample_rate  # Duration of one frame in seconds
+current_note = None
+start_time = 0
+
+harmony_segments = []
+prediction = None
+
+# Merge segments
+for p in range(len(predictions)):
+    if predictions[p] != prediction:
+        current_time = p * frame_time
+        if prediction is not None:
+            harmony_segments.append([
+                start_time,
+                current_time,
+                L[predictions[p]]
+            ])
+        prediction = predictions[p]
+        start_time = current_time
 
 # Get melody lane
 # Extract fundamental frequency (f0) using pYIN
 f0, voiced_flag, _ = librosa.pyin(
     waveform, sr=sample_rate,
     fmin=librosa.note_to_hz("E2"),
-    fmax=librosa.note_to_hz("E7")
+    fmax=librosa.note_to_hz("E7"),
+    fill_na=np.nan
 )
 
-# print(f0, voiced_flag)
-# print(f0.shape, voiced_flag.shape)
 # Clean the melody (replace unvoiced frames with NaN or 0)
 melody_hz = np.where(voiced_flag, f0, np.nan)  # np.where(condition, x, y)
-
-# print(melody_hz)
-# print(melody_hz.shape)
 
 # 4. Convert continuous frequencies to MIDI note numbers
 # Clean up NaN values for the conversion step
@@ -122,59 +142,29 @@ valid_mask = ~np.isnan(melody_hz)
 melody_midi[valid_mask] = librosa.hz_to_midi(melody_hz[valid_mask])
 melody_midi[~valid_mask] = None  # Keep unvoiced segments as NaN
 
-# print(melody_midi)
-# print(melody_midi.shape)
-
-# frames = len(melody_midi)
+hop_length = 512
 frame_time = hop_length / sample_rate  # Duration of one frame in seconds
 
 melody_segments = []
-current_note = None
+note = None
 start_time = 0
 
-# print(frame_time)
-for f in range(len(melody_midi)):
-    current_time = f * frame_time
-    rounded_note = int(np.round(melody_midi[f])) if not np.isnan(melody_midi[f]) else None
-    if rounded_note != current_note:
-        if current_note is not None:
+for n in range(len(melody_midi)):
+    current_time = n * frame_time
+    rounded_note = int(np.round(melody_midi[n])) if not np.isnan(melody_midi[n]) else None
+    if rounded_note != note:
+        if note is not None:
             duration = current_time - start_time
             if duration > 0.05:  # Filter out noise shorter than 50ms
                 melody_segments.append([
                     start_time,
                     current_time,
-                    librosa.midi_to_note(current_note)
+                    librosa.midi_to_note(note)
                 ])
 
         # Start tracking the new state
-        current_note = rounded_note
+        note = rounded_note
         start_time = current_time
-
-# Smooth predictions?
-predictions = np.argmax(scores, axis=0)
-frames = (np.arange(predictions.size) * hop_length / sample_rate).tolist()
-
-harmony_segments = []
-_p = None
-
-# Merge segments
-for f, p in zip(frames, predictions):
-    if harmony_segments:
-        if _p == p:
-            continue
-        else:
-            _p = p
-            harmony_segments[-1][1] = f
-            harmony_segments.append([
-                f, None, L[p]
-            ])
-    else:
-        _p = p
-        harmony_segments.append([
-            f, None, L[p]
-        ])
-
-harmony_segments[-1][1] = f
 
 output = {
     "file_path": audio_file_path.resolve().as_posix(),
