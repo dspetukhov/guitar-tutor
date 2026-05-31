@@ -72,38 +72,24 @@ def chord_templates():
     # 12-dim pitch-class templates for triads
     NP = len(PITCHES)
     I = np.arange(NP)
-    T, L = [], []
+    T = []  # Triads
+    L = []  # Labels
+    S = {
+        "maj": [4, 7],
+        "min": [3, 7],
+        "dim": [3, 6],
+        "aug": [4, 8]
+    }
     tol = 1e-9
     for root in range(NP):
-        # major: 0,4,7; minor: 0,3,7
-        c_maj = np.isin(
-            I,
-            [(root) % NP, (root+4) % NP, (root+7) % NP]
-        ).astype(float)
-        c_maj /= np.linalg.norm(c_maj) + tol
-        c_min = np.isin(
-            I,
-            [(root) % NP, (root+3) % NP, (root+7) % NP]
-        ).astype(float)
-        c_min /= np.linalg.norm(c_min) + tol
-        c_dim = np.isin(
-            I,
-            [(root) % NP, (root+3) % NP, (root+6) % NP]
-        ).astype(float)
-        c_dim /= np.linalg.norm(c_dim) + tol
-        c_aug = np.isin(
-            I,
-            [(root) % NP, (root+4) % NP, (root+8) % NP]
-        ).astype(float)
-        c_aug /= np.linalg.norm(c_aug) + tol
-        T.append(c_maj)
-        L.append(f"{PITCHES[root]}:maj")
-        T.append(c_min)
-        L.append(f"{PITCHES[root]}:min")
-        T.append(c_dim)
-        L.append(f"{PITCHES[root]}:dim")
-        T.append(c_aug)
-        L.append(f"{PITCHES[root]}:aug")
+        for quality, v in S.items():
+            c = np.isin(
+                I,
+                [(root) % NP, (root+v[0]) % NP, (root+v[1]) % NP]
+            ).astype(float)
+            c /= np.linalg.norm(c) + tol
+            T.append(c)
+            L.append(f"{PITCHES[root]}:{quality}")
     return np.stack(T, axis=0), L  # (48, 12)
 
 
@@ -113,6 +99,12 @@ logging.info(f"Template: {T.shape} | Labels: {L}")
 # Get harmony lane raw estimates
 scores = T @ chroma  # -> (24, frames)
 
+# Get melody lane extraction (predominant F0)
+t_mel, f0_hz, voiced = extract_melody_predominant(
+    y.T, sr, hop=hop_mel, fmin_hz=librosa.note_to_hz('E2'), fmax_hz=librosa.note_to_hz('E7')
+)
+f0_midi = librosa.hz_to_midi(f0_hz)
+
 
 def prediction_to_triad(item):
     root = item // 2
@@ -120,7 +112,7 @@ def prediction_to_triad(item):
     return f"{PITCHES[root]}:{quality}"
 
 
-# Smooth labels?
+# Smooth predictions?
 predictions = np.argmax(scores, axis=0)
 frames = (np.arange(predictions.size) * hop_length).tolist()
 
