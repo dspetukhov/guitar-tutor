@@ -99,52 +99,90 @@ logging.info(f"Template: {T.shape} | Labels: {L}")
 # Get harmony lane raw estimates
 scores = T @ chroma  # -> (24, frames)
 
-# Get melody lane extraction (predominant F0)
-# f0, voiced_flag, voiced_probs = librosa.pyin(
-#     waveform, sr=sample_rate,
-#     fmin=librosa.note_to_hz("E2"),
-#     fmax=librosa.note_to_hz("E7")
-# )
+# Get melody lane
+# Extract fundamental frequency (f0) using pYIN
+f0, voiced_flag, _ = librosa.pyin(
+    waveform, sr=sample_rate,
+    fmin=librosa.note_to_hz("E2"),
+    fmax=librosa.note_to_hz("E7")
+)
 
-# print(f0, voiced_flag, voiced_probs)
-
-# melody_hz = np.where(voiced_flag, f0, np.nan)
+# print(f0, voiced_flag)
+# print(f0.shape, voiced_flag.shape)
+# Clean the melody (replace unvoiced frames with NaN or 0)
+melody_hz = np.where(voiced_flag, f0, np.nan)  # np.where(condition, x, y)
 
 # print(melody_hz)
+# print(melody_hz.shape)
 
+# 4. Convert continuous frequencies to MIDI note numbers
+# Clean up NaN values for the conversion step
+melody_midi = np.zeros_like(melody_hz)
+valid_mask = ~np.isnan(melody_hz)
+melody_midi[valid_mask] = librosa.hz_to_midi(melody_hz[valid_mask])
+melody_midi[~valid_mask] = None  # Keep unvoiced segments as NaN
+
+# print(melody_midi)
+# print(melody_midi.shape)
+
+# frames = len(melody_midi)
+frame_time = hop_length / sample_rate  # Duration of one frame in seconds
+
+melody_segments = []
+current_note = None
+start_time = 0
+
+# print(frame_time)
+for f in range(len(melody_midi)):
+    current_time = f * frame_time
+    rounded_note = int(np.round(melody_midi[f])) if not np.isnan(melody_midi[f]) else None
+    if rounded_note != current_note:
+        if current_note is not None:
+            duration = current_time - start_time
+            if duration > 0.05:  # Filter out noise shorter than 50ms
+                melody_segments.append([
+                    start_time,
+                    current_time,
+                    librosa.midi_to_note(current_note)
+                ])
+
+        # Start tracking the new state
+        current_note = rounded_note
+        start_time = current_time
 
 # Smooth predictions?
 predictions = np.argmax(scores, axis=0)
-frames = (np.arange(predictions.size) * hop_length).tolist()
+frames = (np.arange(predictions.size) * hop_length / sample_rate).tolist()
 
-segments = []
+harmony_segments = []
 _p = None
 
 # Merge segments
 for f, p in zip(frames, predictions):
-    if segments:
+    if harmony_segments:
         if _p == p:
             continue
         else:
             _p = p
-            segments[-1][1] = f
-            segments.append([
+            harmony_segments[-1][1] = f
+            harmony_segments.append([
                 f, None, L[p]
             ])
     else:
         _p = p
-        segments.append([
+        harmony_segments.append([
             f, None, L[p]
         ])
 
-segments[-1][1] = f
+harmony_segments[-1][1] = f
 
 output = {
     "file_path": audio_file_path.resolve().as_posix(),
     "sample_rate": sample_rate,
     "duration": waveform.shape[0] / sample_rate,
-    "segments": segments
+    "harmony_segments": harmony_segments,
+    "melody_segments": melody_segments
 }
 
 with open("test.json", "w") as file:
-    json.dump(output, file, indent=4, sort_keys=True)
+    json.dump(output, file, indent=4, ensure_ascii=False, sort_keys=True)
