@@ -100,16 +100,17 @@ logging.info(f"Template: {T.shape} | Labels: {L}")
 scores = T @ chroma  # -> (24, frames)
 
 # Get melody lane extraction (predominant F0)
-t_mel, f0_hz, voiced = extract_melody_predominant(
-    y.T, sr, hop=hop_mel, fmin_hz=librosa.note_to_hz('E2'), fmax_hz=librosa.note_to_hz('E7')
-)
-f0_midi = librosa.hz_to_midi(f0_hz)
+# f0, voiced_flag, voiced_probs = librosa.pyin(
+#     waveform, sr=sample_rate,
+#     fmin=librosa.note_to_hz("E2"),
+#     fmax=librosa.note_to_hz("E7")
+# )
 
+# print(f0, voiced_flag, voiced_probs)
 
-def prediction_to_triad(item):
-    root = item // 2
-    quality = "maj" if item % 2 == 0 else "min"
-    return f"{PITCHES[root]}:{quality}"
+# melody_hz = np.where(voiced_flag, f0, np.nan)
+
+# print(melody_hz)
 
 
 # Smooth predictions?
@@ -127,10 +128,14 @@ for f, p in zip(frames, predictions):
         else:
             _p = p
             segments[-1][1] = f
-            segments.append([f, None, prediction_to_triad(p)])
+            segments.append([
+                f, None, L[p]
+            ])
     else:
         _p = p
-        segments.append([f, None, prediction_to_triad(p)])
+        segments.append([
+            f, None, L[p]
+        ])
 
 segments[-1][1] = f
 
