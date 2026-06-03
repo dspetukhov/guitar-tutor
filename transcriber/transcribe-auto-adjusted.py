@@ -1,11 +1,12 @@
 import sys
 import json
 import optuna
-import logging
 import hashlib
 import numpy as np
 import librosa
 from pathlib import Path
+from utility import logging, chord_templates
+from utility.metrics import evaluate_harmony
 
 logging.basicConfig(
     level=logging.INFO,
@@ -25,81 +26,25 @@ if audio_file_path.is_file():
 else:
     sys.exit(1)
 
-PITCHES = "C C# D D# E F F# G G# A A# B".split()
-CHORDS = [f"{p}:{q}" for q in ("maj", "min") for p in PITCHES]
-logging.info(f"Chords: {CHORDS}")
-
-
-def chord_templates():
-    """
-    12-dim pitch-class templates for maj/min triads.
-
-    To Do:
-    - add dim/aug or 7ths once it is stable
-    """
-    NP = len(PITCHES)
-    I = np.arange(NP)
-    T = []
-    for root in range(NP):
-        # major: {0,4,7}; minor: {0,3,7}
-        c_maj = np.isin(
-            I,
-            [(root) % NP, (root+4) % NP, (root+7) % NP]
-        ).astype(float)
-        # c_maj /= np.linalg.norm(c_maj) + 1e-9
-        c_min = np.isin(
-            I,
-            [(root) % NP, (root+3) % NP, (root+7) % NP]
-        ).astype(float)
-        # c_min /= np.linalg.norm(c_min) + 1e-9
-        T.append(c_maj)
-        T.append(c_min)
-    return np.stack(T, axis=0)  # (24, 12)
-
 
 T = chord_templates()  # triad_indices_seq
 logging.info(f"Template: {T.shape}")
 
 
-def get_metrics(chroma, T, predictions):
-    """
-    Lower RMSE and higher cosine similarity mean
-    your triads better capture the harmonic content of the audio.
-
-    To Do:
-    - add more evaluation metrics (no ground-truth)
-    - cosine similarity (after L2-normalization)
-    """
-    reconstructed = np.zeros_like(chroma)
-    for idx in range(predictions.shape[0]):
-        reconstructed[np.nonzero(T[predictions[idx]])[0], idx] = 1
-
-    rmse = np.sqrt(np.mean((chroma - reconstructed) ** 2))
-    chroma_norm = chroma / (np.linalg.norm(chroma) + 1e+8)
-    reconstructed_norm = reconstructed / (np.linalg.norm(reconstructed) + 1e+8)
-    cosine_similarity = np.array([
-        np.dot(chroma_norm[:, idx], reconstructed_norm[:, idx])
-        for idx in range(chroma.shape[1])
-    ])
-    l2_distance = np.linalg.norm(chroma - reconstructed)
-    # cos_sims = np.array([
-    #     np.dot(chroma[:, t], reconstructed[:, t]) / (np.linalg.norm(chroma[:, t]) * np.linalg.norm(reconstructed[:, t]) + 1e-8)
-    #     for t in range(chroma.shape[1])
-    # ])
-    return float(rmse), float(np.mean(cosine_similarity)), float(l2_distance)
-
-
-def transform_tuning(trial, waveform, sample_rate, cache):
+def harmony_tuning(trial, waveform, sample_rate, cache):
     """
     Optuna objective that tunes transformation parameters.
 
     To Do:
     - add more parameters for CQT-chroma
+    - use 'normalize' as an optimized parameter
     - HPCP as an alternative to CQT-chroma
     - beat-synchronous chroma as an alternative to framewise (current)
     - [Optional] HPSS before Chroma to isolate harmonic content (reduces drum bleed) in live recordings
     - [Optional] temporal smoothing with median filter or HMM/Viterbi to reduce jitter
     """
+    # librosa.feature.chroma_stft(y=y, sr=sr)
+    # mean_chroma = np.mean(chromagram, axis=1)
     n_chroma = 12  # default value
     params = {
         "hop_length": trial.suggest_int("hop_length", 64, 32768, step=64),
@@ -114,17 +59,17 @@ def transform_tuning(trial, waveform, sample_rate, cache):
     if key in cache:
         return cache[key]
 
-    chroma = librosa.feature.chroma_cqt(
+    chroma_features = librosa.feature.chroma_cqt(
         y=waveform, sr=sample_rate,
         hop_length=params["hop_length"],
         bins_per_octave=params["bins_per_octave"]
     )
-    chroma_features = librosa.util.normalize(chroma, axis=0)
+    chroma_features = librosa.util.normalize(chroma_features, axis=0)
     logging.info(f"Chroma: {chroma_features.shape}")
 
-    scores = T @ chroma
+    scores = T @ chroma_features
     predictions = np.argmax(scores, axis=0)
-    evals = get_metrics(chroma_features, T, predictions)
+    evals = evaluate_harmony(chroma_features, T, predictions)
     cache[key] = {
         "params": params,
         "evals": evals
