@@ -4,17 +4,17 @@
   <meta charset="UTF-8">
   <title>Transcriber viewer</title>
   <style>
-    #waveform-wrapper {
+    #harmony-waveform-wrapper {
       position: relative;
       contain: layout paint style;
     }
-    #waveform, #label-canvas {
+    #harmony-waveform, #harmony-label-canvas {
       will-change: transform, opacity;
     }
-    #waveform ::part(region) {
+    #harmony-waveform ::part(region) {
       border-left: 0.5px dotted rgb(0, 0, 0, 0.2) !important;
     }
-    #label-scroll {
+    #harmony-label-scroll {
       position: absolute;
       top: 4px;
       left: 0;
@@ -40,10 +40,16 @@
   - [optional] separate horizontal bar for triads (harmony lane) and a separate one for notes (melody lane) and for chords (another harmony lane) - !After implementing note identification
 -->
 <p id="info"></p>
-<div id="waveform-wrapper">
-  <div id="waveform"></div>
-  <div id="label-scroll">
-    <canvas id="label-canvas"></canvas>
+<div id="harmony-waveform-wrapper">
+  <div id="harmony-waveform"></div>
+  <div id="harmony-label-scroll">
+    <canvas id="harmony-label-canvas"></canvas>
+  </div>
+</div>
+<div id="melody-waveform-wrapper">
+  <div id="melody-waveform"></div>
+  <div id="melody-label-scroll">
+    <canvas id="melody-label-canvas"></canvas>
   </div>
 </div>
 <br>
@@ -68,28 +74,28 @@ const LABEL_FONT = '15px serif'
 
 const data = await fetch('test.json').then(r => r.json())
 
-const sampleRate = data.sample_rate
+// const sampleRate = data.sample_rate
 const duration = data.duration
 
 const triadMap = {}
-for (const seg of data.segments) {
+for (const seg of data.harmony_segments) {
   triadMap[seg[2]] = true
 }
 const uniqueTriads = Object.keys(triadMap)
 
 document.getElementById('info').textContent =
-  `${data.file_path} — ${sampleRate.toLocaleString()} Hz — ${duration.toFixed(2)}s — ${uniqueTriads.length} unique triads`
+  `${data.file_path} — ${duration.toFixed(2)}s — ${uniqueTriads.length} unique triads`
 
-const segments = data.segments.map(([startFrame, endFrame, triad]) => ({
-  start: startFrame / sampleRate,
-  end:   endFrame   / sampleRate,
+const segments = data.harmony_segments.map(([startFrame, endFrame, triad]) => ({
+  start: startFrame,
+  end:   endFrame,
   triad,
 }))
 
 const regions = RegionsPlugin.create()
 
 const ws = WaveSurfer.create({
-  container: '#waveform',
+  container: '#harmony-waveform',
   waveColor: 'rgb(182, 185, 192, 0.3)',
   progressColor: '#6c80b8',
   cursorColor: '#23bcee',
@@ -101,6 +107,21 @@ const ws = WaveSurfer.create({
   minPxPerSec: MIN_PX_PER_SEC,
   normalize: false,
   plugins: [regions, TimelinePlugin.create()],
+})
+
+const ws_melody = WaveSurfer.create({
+  container: '#melody-waveform',
+  waveColor: 'rgb(182, 185, 192, 0.3)',
+  progressColor: '#6c80b8',
+  cursorColor: '#23bcee',
+  backgroundColor: '#1a1a1a',
+  height: HEIGHT,
+  barWidth: 2,
+  barGap: 0.5,
+  barRadius: 0.5,
+  minPxPerSec: MIN_PX_PER_SEC,
+  normalize: false,
+  plugins: [TimelinePlugin.create()],
 })
 
 ws.load(data.file_path)
@@ -121,7 +142,7 @@ ws.on('ready', () => {
   }
 
   // draw labels on canvas with greedy non-overlap placement
-  const canvas = document.getElementById('label-canvas');
+  const canvas = document.getElementById('harmony-label-canvas');
   canvas.width  = Math.ceil(duration * MIN_PX_PER_SEC)
   canvas.height = HEIGHT
   const ctx     = canvas.getContext('2d')
@@ -151,7 +172,7 @@ ws.on('ready', () => {
 
   // sync label strip scroll with waveform scroll using WaveSurfer's 'scroll' event
   ws.on('scroll', (visibleStartTime, _visibleEndTime) => {
-    document.getElementById('label-scroll').scrollLeft =
+    document.getElementById('harmony-label-scroll').scrollLeft =
       visibleStartTime * MIN_PX_PER_SEC
     }
   )
