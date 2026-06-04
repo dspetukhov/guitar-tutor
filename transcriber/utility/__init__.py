@@ -1,5 +1,5 @@
 import logging
-from settings import chord_templates
+from .settings import chord_templates
 
 logging.basicConfig(
     level=logging.INFO,
