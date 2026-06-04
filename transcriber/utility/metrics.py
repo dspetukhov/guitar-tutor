@@ -1,8 +1,9 @@
 import librosa
 import numpy as np
+from settings import EPS
 
 
-def evaluate_harmony(chroma, T, predictions, tol=1e-9):
+def evaluate_harmony(chroma, T, predictions, eps=EPS):
     """
     Lower RMSE and higher cosine similarity mean
     triads better capture the harmonic content of the audio.
@@ -24,8 +25,8 @@ def evaluate_harmony(chroma, T, predictions, tol=1e-9):
     rmse = np.sqrt(
         ((chroma - reconstructed) ** 2).mean()
     )
-    chroma_norm = chroma / (np.linalg.norm(chroma) + tol)
-    reconstructed_norm = reconstructed / (np.linalg.norm(reconstructed) + tol)
+    chroma_norm = chroma / (np.linalg.norm(chroma) + eps)
+    reconstructed_norm = reconstructed / (np.linalg.norm(reconstructed) + eps)
     # Chroma fidelity
     cosine_similarity = np.array([
         np.dot(chroma_norm[:, idx], reconstructed_norm[:, idx])
@@ -42,4 +43,9 @@ def evaluate_harmony(chroma, T, predictions, tol=1e-9):
 
 
 def evaluate_melody():
+    """
+    audio resynthesis + chromagram similarity for overall harmonic match,
+    direct chroma/CQT similarity for framewise note activity,
+    onset alignment and per-note salience for timing and note presence
+    """
     pass

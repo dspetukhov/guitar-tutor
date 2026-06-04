@@ -52,40 +52,40 @@ T, L = chord_templates()
 logging.info(f"Template: {T.shape} | Labels: {L}")
 
 # Get harmony lane
-hop_length = 28480
-chroma = librosa.feature.chroma_cqt(
-    y=waveform, sr=sample_rate,
-    hop_length=hop_length,
-    bins_per_octave=84
-)
-chroma = librosa.util.normalize(chroma, axis=0)
-logging.info(f"Chroma: {chroma.shape}")
+# hop_length = 28480
+# chroma = librosa.feature.chroma_cqt(
+#     y=waveform, sr=sample_rate,
+#     hop_length=hop_length,
+#     bins_per_octave=84
+# )
+# chroma = librosa.util.normalize(chroma, axis=0)
+# logging.info(f"Chroma: {chroma.shape}")
 
-scores = T @ chroma  # raw estimates
+# scores = T @ chroma  # raw estimates
 
-# Smooth predictions?
-predictions = np.argmax(scores, axis=0)
-frames = (np.arange(predictions.size) * hop_length / sample_rate)
+# # Smooth predictions?
+# predictions = np.argmax(scores, axis=0)
+# frames = (np.arange(predictions.size) * hop_length / sample_rate)
 
-frame_time = hop_length / sample_rate  # Duration of one frame in seconds
-current_note = None
-start_time = 0
+# frame_time = hop_length / sample_rate  # Duration of one frame in seconds
+# current_note = None
+# start_time = 0
 
-harmony_segments = []
-prediction = None
+# harmony_segments = []
+# prediction = None
 
-# Merge segments
-for p in range(len(predictions)):
-    if predictions[p] != prediction:
-        current_time = p * frame_time
-        if prediction is not None:
-            harmony_segments.append([
-                start_time,
-                current_time,
-                L[predictions[p]]
-            ])
-        prediction = predictions[p]
-        start_time = current_time
+# # Merge segments
+# for p in range(len(predictions)):
+#     if predictions[p] != prediction:
+#         current_time = p * frame_time
+#         if prediction is not None:
+#             harmony_segments.append([
+#                 start_time,
+#                 current_time,
+#                 L[predictions[p]]
+#             ])
+#         prediction = predictions[p]
+#         start_time = current_time
 
 # Get melody lane
 # Extract fundamental frequency (f0) using pYIN
@@ -101,12 +101,49 @@ f0, voiced_flag, voiced_prob = librosa.pyin(
 # Clean the melody (replace unvoiced frames with NaN or 0)
 melody_hz = np.where(voiced_flag, f0, np.nan)  # np.where(condition, x, y)
 
+# Onset alignment and per-note salience for timing and note presence
+# Onset alignment
+
+onset_env = librosa.onset.onset_strength(
+    y=waveform,
+    sr=sample_rate,
+    hop_length=hop_length
+)
+
+# print(onset_env)
+print(onset_env.shape)
+
+onset_frames = librosa.onset.onset_detect(
+    onset_envelope=onset_env,
+    sr=sample_rate,
+    hop_length=hop_length,
+    backtrack=True,
+    # units='time'
+)
+
+# print(onset_frames)
+print(onset_frames.shape)
+
+peak_values = onset_env[onset_frames]  # possible only if `units` != 'time'
+average_confidence_score = np.mean(peak_values)
+
+print(len(peak_values))
+print(average_confidence_score)  # might be used as a proxy metric
+
+# Per-note CQT salience ??
+
+# Direct chroma/CQT similarity
+
 # Convert continuous frequencies to MIDI note numbers
 # Clean up NaN values for the conversion step
 melody_midi = np.zeros_like(melody_hz)
 valid_mask = ~np.isnan(melody_hz)
 melody_midi[valid_mask] = librosa.hz_to_midi(melody_hz[valid_mask])
 melody_midi[~valid_mask] = np.nan  # Keep unvoiced segments as NaN
+
+print(f0, f0.shape)
+print(melody_hz[:10], melody_hz.shape)
+print(melody_midi[:10], melody_midi.shape)
 
 frame_time = hop_length / sample_rate  # Duration of one frame in seconds
 
@@ -132,17 +169,18 @@ for n in range(len(melody_midi)):
         start_time = current_time
 
 # To Do: implement as a part of auto-adjustment pipeline
-# flatness = librosa.feature.spectral_flatness(y=waveform, hop_length=hop_length)
-# print(flatness, "flatness")
-# print(flatness.shape)
+flatness = librosa.feature.spectral_flatness(y=waveform, hop_length=hop_length)
+print(flatness, "flatness")
+print(flatness.shape)
+print(len(melody_segments), len(melody_midi))
 
-output = {
-    "file_path": audio_file_path.resolve().as_posix(),
-    "sample_rate": sample_rate,
-    "duration": waveform.shape[0] / sample_rate,
-    "harmony_segments": harmony_segments,
-    "melody_segments": melody_segments
-}
+# output = {
+#     "file_path": audio_file_path.resolve().as_posix(),
+#     "sample_rate": sample_rate,
+#     "duration": waveform.shape[0] / sample_rate,
+#     "harmony_segments": harmony_segments,
+#     "melody_segments": melody_segments
+# }
 
-with open("test.json", "w") as file:
-    json.dump(output, file, indent=4, ensure_ascii=False, sort_keys=True)
+# with open("test.json", "w") as file:
+#     json.dump(output, file, indent=4, ensure_ascii=False, sort_keys=True)
