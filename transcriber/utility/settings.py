@@ -2,6 +2,7 @@ import numpy as np
 
 PITCHES = "C C# D D# E F F# G G# A A# B".split()
 CHORDS = [f"{p}:{q}" for q in ("maj", "min") for p in PITCHES]
+EPS = 1e-9
 
 
 def chord_templates():
@@ -16,14 +17,13 @@ def chord_templates():
         "dim": [3, 6],
         "aug": [4, 8]
     }
-    tol = 1e-9
     for root in range(NP):
         for quality, v in S.items():
             c = np.isin(
                 I,
                 [(root) % NP, (root+v[0]) % NP, (root+v[1]) % NP]
             ).astype(float)
-            c /= np.linalg.norm(c) + tol
+            c /= np.linalg.norm(c) + EPS
             T.append(c)
             L.append(f"{PITCHES[root]}:{quality}")
     T = np.stack(T, axis=0)
