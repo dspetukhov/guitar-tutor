@@ -101,6 +101,45 @@ f0, voiced_flag, voiced_prob = librosa.pyin(
 # Clean the melody (replace unvoiced frames with NaN or 0)
 melody_hz = np.where(voiced_flag, f0, np.nan)  # np.where(condition, x, y)
 
+cqt = np.abs(
+    librosa.cqt(
+        waveform,
+        sr=sample_rate,
+        hop_length=hop_length
+    )
+)
+print(cqt.shape, "cqt")
+freqs = librosa.cqt_frequencies(cqt.shape[0], fmin=librosa.note_to_hz("E2"), bins_per_octave=12)
+print(freqs.shape, freqs[:26], "freqs")
+frame_time = hop_length / sample_rate  # Duration of one frame in seconds
+
+onsets = []
+in_note = False
+for i, v in enumerate(voiced_flag):
+    # current_time = i * frame_time
+    if v and not in_note:
+        onsets.append(i)
+        in_note = True
+    elif not v and in_note:
+        in_note = False
+
+print(onsets[:26], len(onsets), f0.shape)
+
+salience_results = []
+for o in onsets:
+    # frame = librosa.time_to_frames(onset, sr=sample_rate, hop_length=hop_length)
+    # frame = min(frame, cqt.shape[1] - 1)  # Prevent out-of-bounds
+    bin_idx = np.argmin(np.abs(freqs - f0[o]))
+    pitch_energy = cqt[bin_idx, o]
+    avg_energy = np.mean(cqt[:, o])
+    print(o, cqt.shape, freqs.shape, bin_idx)  # 13, 156, 189, 305, 400, 433, 487, 564
+    print(pitch_energy, avg_energy)
+    salience = pitch_energy / (avg_energy + 1e-9)
+    salience_results.append(salience)
+
+print(np.mean(salience_results))
+print(len(salience_results))
+
 # Onset alignment and per-note salience for timing and note presence
 # Onset alignment
 
@@ -111,24 +150,87 @@ onset_env = librosa.onset.onset_strength(
 )
 
 # print(onset_env)
-print(onset_env.shape)
+print(onset_env.shape, "onset_env")
 
-onset_frames = librosa.onset.onset_detect(
-    onset_envelope=onset_env,
-    sr=sample_rate,
-    hop_length=hop_length,
-    backtrack=True,
-    # units='time'
-)
+# Extract reference onsets from waveform
+# onset_times = librosa.onset.onset_detect(
+#     onset_envelope=onset_env,
+#     sr=sample_rate,
+#     hop_length=hop_length,
+#     backtrack=True,
+#     units='time'
+# )
 
-# print(onset_frames)
-print(onset_frames.shape)
+# # print(onset_frames)
+# print(onset_times.shape, "onset_times")  # 225
+# print(onset_times[:26])
 
-peak_values = onset_env[onset_frames]  # possible only if `units` != 'time'
-average_confidence_score = np.mean(peak_values)
+# frame_time = hop_length / sample_rate  # Duration of one frame in seconds
 
-print(len(peak_values))
-print(average_confidence_score)  # might be used as a proxy metric
+# # Extract predicted onsets from PyIN transcription
+# onsets = []
+# in_note = False
+# for i, v in enumerate(voiced_flag):
+#     if v and not in_note:
+#         onset_time = librosa.frames_to_time(i, sr=sample_rate, hop_length=hop_length)
+#         onsets.append(onset_time)
+#         in_note = True
+#     elif not v and in_note:
+#         in_note = False
+#     # return np.array(onsets)
+
+# print(voiced_flag[:26])
+# print(onsets[:26])
+# print(voiced_flag.shape, len(onsets))  # 228
+
+# onsets = np.array(onsets)
+
+# matched_trans = set()
+# matched_audio = set()
+
+# for i, ref_onset in enumerate(onset_times):
+#     diffs = np.abs(onsets - ref_onset)
+#     idx = np.argmin(diffs)
+#     print(i, diffs.shape, idx)
+#     if diffs[idx] <= 0.05 and idx not in matched_trans:
+#         matched_trans.add(idx)
+#         matched_audio.add(i)
+# matches = len(matched_audio)
+
+# print(matches)
+
+# precision = matches / len(onsets) if len(onsets) > 0 else 0.0
+# recall = matches / len(onset_times) if len(onset_times) > 0 else 0.0
+# f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
+
+# print(precision, recall, f1)
+
+# onsets = []
+# in_note = False
+# for i, v in enumerate(voiced_flag):
+#     # current_time = i * frame_time
+#     if v and not in_note:
+#         onsets.append(i * frame_time)
+#         in_note = True
+#     elif not v and in_note:
+#         in_note = False
+
+# print(onsets[:26], len(onsets), sum(voiced_flag))
+
+# print(onsets)
+# print(onset_times.tolist())
+
+# from scipy.spatial.distance import euclidean
+# from fastdtw import fastdtw
+
+# Calculates the overall alignment distance regardless of length mismatches
+# dtw_distance, warp_path = fastdtw(arr1, arr2, dist=euclidean)
+
+# peak_values = onset_env[onset_times]  # possible only if `units` != 'time'
+# average_confidence_score = np.mean(peak_values)
+
+# print(len(peak_values))
+# print(average_confidence_score)  # might be used as a proxy metric
 
 # Per-note CQT salience ??
 
