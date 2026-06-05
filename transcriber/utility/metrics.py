@@ -50,7 +50,7 @@ def evaluate_melody(waveform, sample_rate, hop_length):
     """
     # Extract fundamental frequency (f0) using pYIN
     hop_length = 512
-    _, voiced_flag, _ = librosa.pyin(
+    f0, voiced_flag, _ = librosa.pyin(
         waveform, sr=sample_rate,
         hop_length=hop_length,
         fmin=librosa.note_to_hz("E2"),
@@ -75,16 +75,18 @@ def evaluate_melody(waveform, sample_rate, hop_length):
 
     frame_time = hop_length / sample_rate  # Duration of one frame in seconds
 
-    onsets = []
+    onsets_times = []
+    onsets_indices = []
     in_note = False
     for i, v in enumerate(voiced_flag):
         if v and not in_note:
-            onsets.append(i * frame_time)
+            onsets_times.append(i * frame_time)
+            onsets_indices.append(i)
             in_note = True
         elif not v and in_note:
             in_note = False
 
-    predicted_onsets = np.array(onsets)
+    predicted_onsets = np.array(onsets_times)
 
     predicted_matched = set()
     reference_matched = set()
@@ -100,8 +102,33 @@ def evaluate_melody(waveform, sample_rate, hop_length):
     precision = matched / len(predicted_onsets)
     recall = matched / len(reference_onsets)
     f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
+
+    # Energy salience checks if each detected note is physically present
+    # in the audio spectrum at its onset.
+    # High salience means the note is physically present in the audio at that time
+    # Low salience suggests a weak note
+
+    cqt = np.abs(
+        librosa.cqt(
+            waveform,
+            sr=sample_rate,
+            hop_length=hop_length
+        )
+    )
+    freqs = librosa.cqt_frequencies(cqt.shape[0], fmin=librosa.note_to_hz("E2"), bins_per_octave=12)
+
+    salience = []
+    for i in onsets_indices:
+        freq_bin = np.argmin(np.abs(freqs - f0[i]))
+        pitch_energy = cqt[freq_bin, i]
+        avg_energy = np.mean(cqt[:, i])
+        salience.append(
+            pitch_energy / (avg_energy + 1e-9)
+        )
+
     return {
         "precision": precision,
         "recall": recall,
-        "f1": f1
+        "f1": f1,
+        "salience": np.mean(salience)
     }
