@@ -44,16 +44,16 @@ def get_cqt_parameters(trial, n_chroma):
 
 def get_stft_parameters(trial):
     window_types = [
-        "barthann", "bartlett", "blackman", "blackmanharris", "bohman",
+        "barthann", "bartlett",
         "boxcar", "cosine", "exponential",
         "flattop",
-        "hamming", "hann", "lanczos", "nuttall", "parzen",
-        "taylor", "triang", "tukey"
+        "hamming", "hann", "nuttall", "parzen",
+        "taylor"
     ]
     pad_modes = ["constant", "reflect", "edge", "wrap"]
 
     params = {
-        "n_fft": trial.suggest_int("n_fft", 8, 65536, step=32),
+        "n_fft": trial.suggest_int("n_fft", 8, 65536 * 2, step=32),
         "hop_length": trial.suggest_int("hop_length", 64, 32768, step=64),
         "win_length": trial.suggest_int("hop_length", 8, 32768, step=64),
         "norm": trial.suggest_categorical("norm", [np.inf, None]),
@@ -63,6 +63,7 @@ def get_stft_parameters(trial):
         "ctroct": trial.suggest_float("ctroct", 2.0, 8.0, step=0.1),
         # "octwidth": trial.suggest_float("octwidth", 0.1, 4.9, step=0.1),
     }
+    print(params["window"])
     if params["center"]:
         params["pad_mode"] = trial.suggest_categorical("pad_mode", pad_modes)
     params["hop_length"] = min(params["hop_length"], params["n_fft"] // 2)
