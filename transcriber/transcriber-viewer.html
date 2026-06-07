@@ -4,6 +4,27 @@
   <meta charset="UTF-8">
   <title>Transcriber viewer</title>
   <style>
+    #info {
+      margin: 4px 0 8px;
+      /* font-size: 13px; */
+      opacity: 0.7;
+    }
+    .lane-wrapper {
+      position: relative;
+      contain: layout paint style;
+      margin-bottom: 6px;
+    }
+    .lane-label {
+      font-size: 11px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      opacity: 0.45;
+      margin-bottom: 2px;
+    }
+    /* dotted left-border on every region */
+    .lane-wrapper wavesurfer ::part(region) {
+      border-left: 0.5px dotted rgb(0, 0, 0, 0.2) !important;
+    }
     #harmony-waveform-wrapper {
       position: relative;
       contain: layout paint style;
@@ -11,9 +32,9 @@
     #harmony-waveform, #harmony-label-canvas {
       will-change: transform, opacity;
     }
-    #harmony-waveform ::part(region) {
+    /* #harmony-waveform ::part(region) {
       border-left: 0.5px dotted rgb(0, 0, 0, 0.2) !important;
-    }
+    } */
     #harmony-label-scroll {
       position: absolute;
       top: 4px;
@@ -23,6 +44,18 @@
       overflow: hidden;
       pointer-events: none;
     }
+
+    #play-button {
+      margin-top: 5px;
+      padding: 5px 15px;
+      /* background: #2a2a2a; */
+      color: #ccc;
+      border: 2px solid #444;
+      border-radius: 2px;
+      cursor: pointer;
+    }
+    /* #play-button:hover { background: #333; } */
+    #play-button:disabled { opacity: 0.5; cursor: default; }
   </style>
 </head>
 <body>
@@ -31,7 +64,6 @@
   - chord/triad chart of its musical content
   - player zooming: pre-selected window length (alter MIN_PX_PER_SEC)
   - player slowing down at pre-selected rates
-  - how can I measure that this particular transcription is good enough (matches original recording somehow)? what metrics to choose? - !Analyze
   - add a beat grid to anticipate changes
 
   - [optional] crispy/clean-cut fonts
@@ -40,25 +72,56 @@
   - [optional] separate horizontal bar for triads (harmony lane) and a separate one for notes (melody lane) and for chords (another harmony lane) - !After implementing note identification
 -->
 <p id="info"></p>
-<div id="harmony-waveform-wrapper">
+
+<div class="lane-wrapper" id="harmony-wrapper">
   <div id="harmony-waveform"></div>
-  <div id="harmony-label-scroll">
+  <div class="label-scroll" id="harmony-label-scroll">
     <canvas id="harmony-label-canvas"></canvas>
   </div>
 </div>
-<div id="melody-waveform-wrapper">
+
+<div class="lane-wrapper" id="melody-wrapper">
   <div id="melody-waveform"></div>
-  <div id="melody-label-scroll">
+  <div class="label-scroll" id="melody-label-scroll">
     <canvas id="melody-label-canvas"></canvas>
   </div>
 </div>
-<br>
+
 <button id="play-button" disabled>Play</button>
 
 <script type="module">
 import WaveSurfer from 'https://unpkg.com/wavesurfer.js@7/dist/wavesurfer.esm.js'
 import RegionsPlugin from 'https://unpkg.com/wavesurfer.js@7/dist/plugins/regions.esm.js'
 import TimelinePlugin from 'https://unpkg.com/wavesurfer.js@7/dist/plugins/timeline.esm.js'
+
+// constants
+const HEIGHT = 400
+const MIN_PX_PER_SEC = 150
+const ROW_HEIGHT = 16
+const LABEL_FONT = '15px serif'
+
+const WS_DEFAULTS = {
+  waveColor:       'rgba(182, 185, 192, 0.3)',
+  progressColor:   '#6c80b8',
+  cursorColor:     '#23bcee',
+  backgroundColor: '#1a1a1a',
+  height:          HEIGHT,
+  barWidth:        2,
+  barGap:          0.5,
+  barRadius:       0.5,
+  minPxPerSec:     MIN_PX_PER_SEC,
+  normalize:       false,
+}
+
+// colour for segments
+function segmentColor(label) {
+  // harmony triads: "C:maj", "A:min" etc.
+  const quality = label.split(':')[1]
+  if (quality === 'maj') return 'rgba(255, 204, 138, 0.15)'
+  if (quality === 'min') return 'rgba(145, 203, 251, 0.15)'
+  // melody notes: plain note names — use a neutral tint
+  return 'rgba(180, 150, 255, 0.15)'
+}
 
 function triadColor(triad) {
   const quality = triad.split(':')[1]
@@ -67,15 +130,9 @@ function triadColor(triad) {
     : 'rgba(145, 203, 251, 0.15)'
 }
 
-const HEIGHT = 400
-const MIN_PX_PER_SEC = 150
-const ROW_HEIGHT = 16
-const LABEL_FONT = '15px serif'
-
-const data = await fetch('test.json').then(r => r.json())
-
-// const sampleRate = data.sample_rate
-const duration = data.duration
+// load data
+const data      = await fetch('test.json').then(r => r.json())
+const duration  = data.duration
 
 const triadMap = {}
 for (const seg of data.harmony_segments) {
@@ -83,113 +140,158 @@ for (const seg of data.harmony_segments) {
 }
 const uniqueTriads = Object.keys(triadMap)
 
+// Info bar
 document.getElementById('info').textContent =
   `${data.file_path} — ${duration.toFixed(2)}s — ${uniqueTriads.length} unique triads`
 
-const segments = data.harmony_segments.map(([startFrame, endFrame, triad]) => ({
+// Make lanes
+const regionsHarmony = RegionsPlugin.create()
+const regionsMelody = RegionsPlugin.create()
+
+const wsHarmony = WaveSurfer.create({
+  ...WS_DEFAULTS,
+  container: "#harmony-waveform",
+  plugins: [regionsHarmony, TimelinePlugin.create()]
+})
+const wsMelody = WaveSurfer.create({
+  ...WS_DEFAULTS,
+  container: "#melody-waveform",
+  plugins: [regionsMelody, TimelinePlugin.create()]
+})
+
+const segmentsHarmony = data.harmony_segments.map(([startFrame, endFrame, label]) => ({
   start: startFrame,
   end:   endFrame,
-  triad,
+  label,
 }))
 
-const regions = RegionsPlugin.create()
+// Load same audio into both lanes
+wsHarmony.load(data.file_path)
+wsMelody.load(data.file_path)
 
-const ws = WaveSurfer.create({
-  container: '#harmony-waveform',
-  waveColor: 'rgb(182, 185, 192, 0.3)',
-  progressColor: '#6c80b8',
-  cursorColor: '#23bcee',
-  backgroundColor: '#1a1a1a',
-  height: HEIGHT,
-  barWidth: 2,
-  barGap: 0.5,
-  barRadius: 0.5,
-  minPxPerSec: MIN_PX_PER_SEC,
-  normalize: false,
-  plugins: [regions, TimelinePlugin.create()],
-})
-
-const ws_melody = WaveSurfer.create({
-  container: '#melody-waveform',
-  waveColor: 'rgb(182, 185, 192, 0.3)',
-  progressColor: '#6c80b8',
-  cursorColor: '#23bcee',
-  backgroundColor: '#1a1a1a',
-  height: HEIGHT,
-  barWidth: 2,
-  barGap: 0.5,
-  barRadius: 0.5,
-  minPxPerSec: MIN_PX_PER_SEC,
-  normalize: false,
-  plugins: [TimelinePlugin.create()],
-})
-
-ws.load(data.file_path)
-
-ws.on('ready', () => {
+wsHarmony.on('ready', () => {
   document.getElementById('play-button').disabled = false
-  document.getElementById('play-button').onclick = () => ws.playPause()
 
-  // colored regions — no content, labels handled by canvas
-  for (const seg of segments) {
-    regions.addRegion({
+  for (const seg of segmentsHarmony) {
+    regionsHarmony.addRegion({
       start:  seg.start,
       end:    seg.end,
-      color:  triadColor(seg.triad),
+      color:  segmentColor(seg.label),
       drag:   false,
       resize: false,
     })
   }
 
-  // draw labels on canvas with greedy non-overlap placement
-  const canvas = document.getElementById('harmony-label-canvas');
+  const canvas  = document.getElementById('harmony-label-canvas')
   canvas.width  = Math.ceil(duration * MIN_PX_PER_SEC)
   canvas.height = HEIGHT
-  const ctx     = canvas.getContext('2d')
+
+  const ctx = canvas.getContext('2d')
   ctx.font      = LABEL_FONT
-  ctx.fillStyle = 'rgba(0, 0, 0)'
+  ctx.fillStyle = 'rgba(220, 220, 220, 0.85)'
+
+  // Offscreen canvas just for text measurement
+  const ruler = Object.assign(document.createElement('canvas').getContext('2d'), { font: LABEL_FONT })
 
   let lastRight = 0
-  let shift = -1
+  let row       = 0
 
-  const measure = document.createElement('canvas').getContext('2d')
-  measure.font = LABEL_FONT
+  for (const seg of segmentsHarmony) {
+    const x     = seg.start * MIN_PX_PER_SEC
+    const width = ruler.measureText(seg.label).width
 
-  for (const seg of segments) {
-    const start = seg.start * MIN_PX_PER_SEC
-    const width = measure.measureText(seg.triad).width
-    const end   = seg.end * MIN_PX_PER_SEC
+    row = (x < lastRight) ? row + 1 : 0
 
-    if (lastRight > start) {
-      shift = shift + 1;
-    } else {
-      shift = 0;
-    }
-
-    ctx.fillText(seg.triad, start + 1, ROW_HEIGHT + ROW_HEIGHT * shift)
-    lastRight = start + width
+    ctx.fillText(seg.label, x + 2, ROW_HEIGHT + ROW_HEIGHT * row)
+    lastRight = x + width
   }
 
-  // sync label strip scroll with waveform scroll using WaveSurfer's 'scroll' event
-  ws.on('scroll', (visibleStartTime, _visibleEndTime) => {
-    document.getElementById('harmony-label-scroll').scrollLeft =
-      visibleStartTime * MIN_PX_PER_SEC
-    }
-  )
+  ws.on('scroll', (visibleStartTime) => {
+    document.getElementById(labelScrollId).scrollLeft = visibleStartTime * MIN_PX_PER_SEC
+  })
 })
 
-ws.on('play',  () => document.getElementById('play-button').textContent = 'Pause')
-ws.on('pause', () => document.getElementById('play-button').textContent = 'Play')
-ws.on('finish',() => document.getElementById('play-button').textContent = 'Play')
+// wsHarmony.on('ready', () => {
+//   document.getElementById('play-button').disabled = false
+//   document.getElementById('play-button').onclick = () => wsHarmony.playPause()
+
+//   // colored regions — no content, labels handled by canvas
+//   for (const seg of segments) {
+//     regionsHarmony.addRegion({
+//       start:  seg.start,
+//       end:    seg.end,
+//       color:  triadColor(seg.triad),
+//       drag:   false,
+//       resize: false,
+//     })
+//   }
+
+//   // draw labels on canvas with greedy non-overlap placement
+//   const canvas = document.getElementById('harmony-label-canvas');
+//   canvas.width  = Math.ceil(duration * MIN_PX_PER_SEC)
+//   canvas.height = HEIGHT
+//   const ctx     = canvas.getContext('2d')
+//   ctx.font      = LABEL_FONT
+//   ctx.fillStyle = 'rgba(0, 0, 0)'
+
+//   let lastRight = 0
+//   let shift = -1
+
+//   const measure = document.createElement('canvas').getContext('2d')
+//   measure.font = LABEL_FONT
+
+//   for (const seg of segments) {
+//     const start = seg.start * MIN_PX_PER_SEC
+//     const width = measure.measureText(seg.triad).width
+//     const end   = seg.end * MIN_PX_PER_SEC
+
+//     if (lastRight > start) {
+//       shift = shift + 1;
+//     } else {
+//       shift = 0;
+//     }
+
+//     ctx.fillText(seg.triad, start + 1, ROW_HEIGHT + ROW_HEIGHT * shift)
+//     lastRight = start + width
+//   }
+
+//   // sync label strip scroll with waveform scroll using WaveSurfer's 'scroll' event
+//   wsHarmony.on('scroll', (visibleStartTime, _visibleEndTime) => {
+//     document.getElementById('harmony-label-scroll').scrollLeft =
+//       visibleStartTime * MIN_PX_PER_SEC
+//     }
+//   )
+// })
+
+// Playback control
+const playButton = document.getElementById('play-button')
+playButton.onclick = () => {
+  wsHarmony.playPause()
+  // Keep melody cursor in sync when the harmony lane drives playback
+  if (wsHarmony.isPlaying()) {
+    wsMelody.setTime(wsHarmony.getCurrentTime())
+    wsMelody.play()
+  } else {
+    wsMelody.pause()
+  }
+}
+
+wsHarmony.on('play',   () => { playButton.textContent = 'Pause'; wsMelody.play()  })
+wsHarmony.on('pause',  () => { playButton.textContent = 'Play';  wsMelody.pause() })
+wsHarmony.on('finish', () => { playButton.textContent = 'Play';  wsMelody.pause() })
+
+// Keep melody cursor synced during playback
+wsHarmony.on('timeupdate', (t) => wsMelody.setTime(t))
+
+// wsHarmony.on('play',  () => document.getElementById('play-button').textContent = 'Pause')
+// wsHarmony.on('pause', () => document.getElementById('play-button').textContent = 'Play')
+// wsHarmony.on('finish',() => document.getElementById('play-button').textContent = 'Play')
 
 // Destroy on unload
 window.addEventListener('beforeunload', () => {
-  if (ws) {
-      ws.stop();
-      ws.destroy();
-  }
+  wsHarmony.destroy()
+  wsMelody.destroy()
 })
 </script>
-
 </body>
 </html>
