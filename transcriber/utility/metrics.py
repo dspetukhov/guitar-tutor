@@ -1,9 +1,9 @@
 import librosa
 import numpy as np
-from settings import EPS
+from .settings import EPS
 
 
-def evaluate_harmony(chroma, T, predictions, eps=EPS):
+def evaluate_harmony(chromagram, T, predictions, eps=EPS):
     """
     Lower RMSE and higher cosine similarity mean
     triads better capture the harmonic content of the audio.
@@ -11,28 +11,28 @@ def evaluate_harmony(chroma, T, predictions, eps=EPS):
     To Do:
     - add more evaluation metrics (no ground-truth)
     """
-    reconstructed = np.zeros_like(chroma)
+    reconstructed = np.zeros_like(chromagram)
     energy_coverage = []
-    total_energy = chroma.sum()
+    total_energy = chromagram.sum()
     for p in range(predictions.size):
         indices = np.nonzero(T[predictions[p]])[0]
         reconstructed[indices, p] = 1
         # Energy coverage
         energy_coverage.append(
-            chroma[indices, p].sum() / total_energy
+            chromagram[indices, p].sum() / total_energy
         )
 
     rmse = np.sqrt(
-        ((chroma - reconstructed) ** 2).mean()
+        ((chromagram - reconstructed) ** 2).mean()
     )
-    chroma_norm = chroma / (np.linalg.norm(chroma) + eps)
+    chromagram_norm = chromagram / (np.linalg.norm(chromagram) + eps)
     reconstructed_norm = reconstructed / (np.linalg.norm(reconstructed) + eps)
     # Chroma fidelity
     cosine_similarity = np.array([
-        np.dot(chroma_norm[:, idx], reconstructed_norm[:, idx])
+        np.dot(chromagram_norm[:, idx], reconstructed_norm[:, idx])
         for idx in range(predictions.size)
     ]).mean()
-    l2_distance = np.linalg.norm(chroma_norm - reconstructed_norm)
+    l2_distance = np.linalg.norm(chromagram_norm - reconstructed_norm)
 
     return {
         "RMSE": float(rmse),
