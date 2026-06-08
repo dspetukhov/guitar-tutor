@@ -4,7 +4,11 @@ import optuna
 import hashlib
 import numpy as np
 import librosa
+import psutil
 from pathlib import Path
+from threading import Thread
+from multiprocessing import Process, Queue
+from time import sleep
 from utility import logging, chord_templates
 from utility.metrics import evaluate_harmony
 
@@ -13,6 +17,10 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S"
 )
+
+N_TRIALS = 260
+ARTIFACTS_DIR = "artifacts"
+LOGS_DIR = "logs"
 
 audio_file_path = Path("Time On My Hands.wav")
 
@@ -31,6 +39,22 @@ T, _ = chord_templates()
 logging.info(f"Template: {T.shape}")
 
 
+def _memory_watchdog(process, queue, limit_bytes):
+    p = psutil.Process(process.pid)
+    while process.is_alive():
+        if p.memory_info().rss > limit_bytes:
+            logging.warning("Terminating process: memory exceeded 1GB")
+            process.terminate()
+            break
+        sleep(0.1)  # Poll every 0.5 seconds
+    queue.put(None)
+
+
+def get_params_key(params: dict) -> str:
+    """MD5 hash of a parameter dict, used as a cache key."""
+    return hashlib.md5(json.dumps(params, sort_keys=True).encode()).hexdigest()
+
+
 def get_cqt_parameters(trial, n_chroma):
     return {
         "hop_length": trial.suggest_int("hop_length", 64, 65536, step=64),
@@ -42,20 +66,28 @@ def get_cqt_parameters(trial, n_chroma):
     }
 
 
+def _stft_worker(queue, y, sr, n_chroma, **kwargs):
+    chromagram = librosa.feature.chroma_stft(
+        y=y, sr=sr, n_chroma=n_chroma,
+        **kwargs
+    )
+    queue.put(chromagram)
+
+
 def get_stft_parameters(trial):
     window_types = [
-        "barthann", "bartlett",
+        "barthann", "bartlett", "blackman", "blackmanharris", "bohman",
         "boxcar", "cosine", "exponential",
         "flattop",
-        "hamming", "hann", "nuttall", "parzen",
-        "taylor"
+        "hamming", "hann", "lanczos", "nuttall", "parzen",
+        "taylor", "triang", "tukey"
     ]
-    pad_modes = ["constant", "reflect", "edge", "wrap"]
+    pad_modes = ["constant", "reflect", "edge"]
 
     params = {
         "n_fft": trial.suggest_int("n_fft", 8, 65536 * 2, step=32),
         "hop_length": trial.suggest_int("hop_length", 64, 32768, step=64),
-        "win_length": trial.suggest_int("hop_length", 8, 32768, step=64),
+        "win_length": trial.suggest_int("win_length", 8, 32768, step=64),
         "norm": trial.suggest_categorical("norm", [np.inf, None]),
         "center": trial.suggest_categorical("center", [True, False]),
         "base_c": trial.suggest_categorical("base_c", [True, False]),
@@ -90,7 +122,7 @@ def harmony_objective(trial, waveform, sample_rate, metric, cache):
     else:
         return np.inf
 
-    key = hashlib.md5(json.dumps(params, sort_keys=True).encode()).hexdigest()
+    key = get_params_key(params)
     if key in cache:
         return cache[key]["evals"][metric]
 
@@ -101,10 +133,27 @@ def harmony_objective(trial, waveform, sample_rate, metric, cache):
                 **params
             )
         elif method == "stft":
-            chromagram = librosa.feature.chroma_stft(
-                y=waveform, sr=sample_rate, n_chroma=n_chroma,
-                **params
+            queue = Queue()
+            process = Process(
+                target=_stft_worker,
+                args=(queue, waveform, sample_rate, n_chroma),
+                kwargs=params
             )
+            process.start()
+            Thread(
+                target=_memory_watchdog,
+                args=(process, queue, 1024**3),
+                daemon=True
+            ).start()
+            chromagram = queue.get()
+
+            process.join(timeout=2)
+            if process.is_alive():
+                process.terminate()
+                process.join()
+
+            if chromagram is None:
+                return np.inf
         else:
             return np.inf
 
@@ -121,30 +170,57 @@ def harmony_objective(trial, waveform, sample_rate, metric, cache):
         "params": params,
         "evals": evals
     }
-    # Use only one metric as a first approximation
     return cache[key]["evals"][metric]
 
 
-if __name__ == "__main__":
+def run_study(method: str, criterion: str) -> dict:
+    cache = {"method": method}
+    study_name = f"harmony-{method}-{criterion}"
+    storage = optuna.storages.JournalStorage(
+        optuna.storages.journal.JournalFileBackend(f"{LOGS_DIR}/{study_name}.log")
+    )
     study = optuna.create_study(
-        study_name="Harmony lane",
+        study_name=study_name,
         direction="minimize",
-        sampler=optuna.samplers.TPESampler(seed=2026)
+        storage=storage,
+        sampler=optuna.samplers.TPESampler(seed=2026),
+        load_if_exists=True
     )
 
-    cache = {"method": "stft"}
+    completed = 0
+    for trial in study.get_trials(states=[optuna.trial.TrialState.COMPLETE]):
+        cache[get_params_key(trial.params)] = trial.value
+        completed += 1
+
+    remaining = N_TRIALS - completed
+    if completed:
+        logging.info(
+            f"{completed}/{N_TRIALS} trials already done for {method}/{criterion},"
+            f"running {remaining} more"
+        )
+
     study.optimize(
         lambda trial: harmony_objective(
             trial,
-            waveform, sample_rate, "RMSE", cache
+            waveform, sample_rate, criterion, cache
         ),
-        n_trials=300
+        n_trials=remaining
     )
 
-    for trial in study.best_trials:
-        print(f"Trial #{trial.number}")
-        print(f"  Values: {trial.values}")
-        print(f"  Params: {trial.params}")
+    best_trial = {
+        "number": study.best_trial.number,
+        "value": study.best_trial.value,
+        "params": study.best_trial.params
+    }
 
-    with Path(f"harmony-lane-{cache['method']}-tuned.json").open("w") as file:
-        json.dump(cache, file, indent=4)
+    return best_trial
+
+
+if __name__ == "__main__":
+    Path(ARTIFACTS_DIR).mkdir(parents=True, exist_ok=True)
+    Path(LOGS_DIR).mkdir(parents=True, exist_ok=True)
+    criterion = "RMSE"
+    stft = run_study("stft", criterion)
+    logging.info(f"stft: {stft}")
+    cqt = run_study("cqt", criterion)
+    logging.info(f"cqt: {cqt}")
