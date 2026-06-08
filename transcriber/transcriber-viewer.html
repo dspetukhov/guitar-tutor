@@ -6,41 +6,27 @@
   <style>
     #info {
       margin: 4px 0 8px;
-      /* font-size: 13px; */
       opacity: 0.7;
     }
-    .lane-wrapper {
+
+    #lane-wrapper {
       position: relative;
       contain: layout paint style;
       margin-bottom: 6px;
     }
-    .lane-label {
-      font-size: 11px;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
-      opacity: 0.45;
-      margin-bottom: 2px;
+
+    /* full-height dotted left border on every harmony region */
+    #lane-wrapper ::part(region) {
+      border-left: 0.5px dotted rgba(0, 0, 0, 0.5) !important;
     }
-    /* dotted left-border on every region */
-    .lane-wrapper wavesurfer ::part(region) {
-      border-left: 0.5px dotted rgb(0, 0, 0, 0.2) !important;
-    }
-    #harmony-waveform-wrapper {
-      position: relative;
-      contain: layout paint style;
-    }
-    #harmony-waveform, #harmony-label-canvas {
-      will-change: transform, opacity;
-    }
-    /* #harmony-waveform ::part(region) {
-      border-left: 0.5px dotted rgb(0, 0, 0, 0.2) !important;
-    } */
-    #harmony-label-scroll {
+
+    #label-scroll {
       position: absolute;
-      top: 4px;
+      top: 0;
       left: 0;
       right: 0;
-      height: 100%;
+      /* stop just above the WaveSurfer scrollbar row (~15 px) */
+      bottom: 15px;
       overflow: hidden;
       pointer-events: none;
     }
@@ -51,10 +37,9 @@
       /* background: #2a2a2a; */
       color: #ccc;
       border: 2px solid #444;
-      border-radius: 2px;
+      border-radius: 4px;
       cursor: pointer;
     }
-    /* #play-button:hover { background: #333; } */
     #play-button:disabled { opacity: 0.5; cursor: default; }
   </style>
 </head>
@@ -73,17 +58,10 @@
 -->
 <p id="info"></p>
 
-<div class="lane-wrapper" id="harmony-wrapper">
-  <div id="harmony-waveform"></div>
-  <div class="label-scroll" id="harmony-label-scroll">
-    <canvas id="harmony-label-canvas"></canvas>
-  </div>
-</div>
-
-<div class="lane-wrapper" id="melody-wrapper">
-  <div id="melody-waveform"></div>
-  <div class="label-scroll" id="melody-label-scroll">
-    <canvas id="melody-label-canvas"></canvas>
+<div id="lane-wrapper">
+  <div id="waveform"></div>
+  <div id="label-scroll">
+    <canvas id="label-canvas"></canvas>
   </div>
 </div>
 
@@ -95,13 +73,99 @@ import RegionsPlugin from 'https://unpkg.com/wavesurfer.js@7/dist/plugins/region
 import TimelinePlugin from 'https://unpkg.com/wavesurfer.js@7/dist/plugins/timeline.esm.js'
 
 // constants
-const HEIGHT = 400
+const HEIGHT         = 500
 const MIN_PX_PER_SEC = 150
-const ROW_HEIGHT = 16
-const LABEL_FONT = '15px serif'
+const ROW_HEIGHT     = 20
+const LABEL_FONT     = '15px monospace'
 
-const WS_DEFAULTS = {
-  waveColor:       'rgba(182, 185, 192, 0.3)',
+// Top zone: harmony labels cascade downward from this Y baseline
+const HARMONY_LABEL_TOP = ROW_HEIGHT
+
+// Bottom zone: melody labels cascade upward from this Y baseline.
+// Reserve the bottom ROW_HEIGHT for the tick row; labels sit above that.
+const MELODY_LABEL_BOTTOM = HEIGHT - ROW_HEIGHT
+
+// colour helpers
+function harmonyColor(label) {
+  const quality = label.split(':')[1]
+  if (quality === 'maj') return 'rgba(255, 204, 138, 0.15)'
+  if (quality === 'min') return 'rgba(145, 203, 251, 0.15)'
+  return 'rgba(200, 200, 200, 0.10)'
+}
+
+// canvas drawing
+function drawLabels(canvas, segmentsHarmony, segmentsMelody, duration) {
+  canvas.width  = Math.ceil(duration * MIN_PX_PER_SEC)
+  canvas.height = HEIGHT
+
+  const ctx   = canvas.getContext('2d')
+  ctx.font = LABEL_FONT
+  ctx.fillStyle = 'rgba(5, 5, 5, 0.75)'
+
+  // offscreen canvas just for text measurement
+  const ruler = Object.assign(document.createElement('canvas').getContext('2d'), { font: LABEL_FONT })
+
+  // harmony labels: cascade downward
+  {
+    let lastRight = 0
+    let row       = 0
+    for (const seg of segmentsHarmony) {
+      const x     = seg.start * MIN_PX_PER_SEC
+      const width = ruler.measureText(seg.label).width
+      row = (x < lastRight) ? row + 1 : 0
+      ctx.fillText(seg.label, x + 3, HARMONY_LABEL_TOP + ROW_HEIGHT * row)
+      lastRight = x + width
+    }
+  }
+
+  // melody labels: cascade upward
+  ctx.fillStyle = 'rgba(5, 5, 5, 0.75)'
+  {
+    let lastRight = 0
+    let row       = 0
+    for (const seg of segmentsMelody) {
+      const x     = seg.start * MIN_PX_PER_SEC
+      const width = ruler.measureText(seg.label).width
+      row = (x < lastRight) ? row + 1 : 0
+      // baseline moves upward with each extra row
+      ctx.fillText(seg.label, x + 3, MELODY_LABEL_BOTTOM - ROW_HEIGHT * row)
+      lastRight = x + width
+    }
+  }
+
+  // melody tick marks: short vertical lines just above bottom edge
+  // lighter and shorter than the full-height harmony region borders
+  const TICK_HEIGHT = Math.round(HEIGHT * 0.25)   // ~25% of lane height
+  ctx.strokeStyle = 'rgba(0, 0, 0, 0.95)'
+  ctx.lineWidth   = 0.5
+  ctx.lineCap     = 'round'
+  ctx.setLineDash([0, 4])
+  for (const seg of segmentsMelody) {
+    const x = Math.round(seg.start * MIN_PX_PER_SEC) + 0.0
+    ctx.beginPath()
+    ctx.moveTo(x, HEIGHT - TICK_HEIGHT)
+    ctx.lineTo(x, HEIGHT)
+    ctx.stroke()
+  }
+}
+
+// load data
+const data     = await fetch('test.json').then(r => r.json())
+const duration = data.duration
+
+const segmentsHarmony = data.harmony_segments.map(([start, end, label]) => ({ start, end, label }))
+const segmentsMelody  = (data.melody_segments ?? []).map(([start, end, label]) => ({ start, end, label }))
+
+const uniqueTriads = new Set(segmentsHarmony.map(s => s.label)).size
+document.getElementById('info').textContent =
+  `${data.file_path} — ${duration.toFixed(2)}s — ${uniqueTriads} unique triads`
+
+// wavesurfer
+const regions = RegionsPlugin.create()
+
+const ws = WaveSurfer.create({
+  container:       '#waveform',
+  waveColor:       'rgba(182, 185, 192, 0.25)',
   progressColor:   '#6c80b8',
   cursorColor:     '#23bcee',
   backgroundColor: '#1a1a1a',
@@ -110,188 +174,51 @@ const WS_DEFAULTS = {
   barGap:          0.5,
   barRadius:       0.5,
   minPxPerSec:     MIN_PX_PER_SEC,
-  normalize:       false,
-}
-
-// colour for segments
-function segmentColor(label) {
-  // harmony triads: "C:maj", "A:min" etc.
-  const quality = label.split(':')[1]
-  if (quality === 'maj') return 'rgba(255, 204, 138, 0.15)'
-  if (quality === 'min') return 'rgba(145, 203, 251, 0.15)'
-  // melody notes: plain note names — use a neutral tint
-  return 'rgba(180, 150, 255, 0.15)'
-}
-
-function triadColor(triad) {
-  const quality = triad.split(':')[1]
-  return quality === 'maj'
-    ? 'rgba(255, 204, 138, 0.15)'
-    : 'rgba(145, 203, 251, 0.15)'
-}
-
-// load data
-const data      = await fetch('test.json').then(r => r.json())
-const duration  = data.duration
-
-const triadMap = {}
-for (const seg of data.harmony_segments) {
-  triadMap[seg[2]] = true
-}
-const uniqueTriads = Object.keys(triadMap)
-
-// Info bar
-document.getElementById('info').textContent =
-  `${data.file_path} — ${duration.toFixed(2)}s — ${uniqueTriads.length} unique triads`
-
-// Make lanes
-const regionsHarmony = RegionsPlugin.create()
-const regionsMelody = RegionsPlugin.create()
-
-const wsHarmony = WaveSurfer.create({
-  ...WS_DEFAULTS,
-  container: "#harmony-waveform",
-  plugins: [regionsHarmony, TimelinePlugin.create()]
-})
-const wsMelody = WaveSurfer.create({
-  ...WS_DEFAULTS,
-  container: "#melody-waveform",
-  plugins: [regionsMelody, TimelinePlugin.create()]
+  normalize:       true,
+  plugins:         [regions, TimelinePlugin.create()],
 })
 
-const segmentsHarmony = data.harmony_segments.map(([startFrame, endFrame, label]) => ({
-  start: startFrame,
-  end:   endFrame,
-  label,
-}))
+ws.load(data.file_path)
 
-// Load same audio into both lanes
-wsHarmony.load(data.file_path)
-wsMelody.load(data.file_path)
-
-wsHarmony.on('ready', () => {
+// ready
+ws.on('ready', () => {
   document.getElementById('play-button').disabled = false
 
+  // Harmony colored regions (full-height borders come from CSS ::part(region))
   for (const seg of segmentsHarmony) {
-    regionsHarmony.addRegion({
+    regions.addRegion({
       start:  seg.start,
       end:    seg.end,
-      color:  segmentColor(seg.label),
+      color:  harmonyColor(seg.label),
       drag:   false,
       resize: false,
     })
   }
 
-  const canvas  = document.getElementById('harmony-label-canvas')
-  canvas.width  = Math.ceil(duration * MIN_PX_PER_SEC)
-  canvas.height = HEIGHT
+  // Draw all labels + melody ticks on shared canvas
+  drawLabels(
+    document.getElementById('label-canvas'),
+    segmentsHarmony,
+    segmentsMelody,
+    duration,
+  )
 
-  const ctx = canvas.getContext('2d')
-  ctx.font      = LABEL_FONT
-  ctx.fillStyle = 'rgba(220, 220, 220, 0.85)'
-
-  // Offscreen canvas just for text measurement
-  const ruler = Object.assign(document.createElement('canvas').getContext('2d'), { font: LABEL_FONT })
-
-  let lastRight = 0
-  let row       = 0
-
-  for (const seg of segmentsHarmony) {
-    const x     = seg.start * MIN_PX_PER_SEC
-    const width = ruler.measureText(seg.label).width
-
-    row = (x < lastRight) ? row + 1 : 0
-
-    ctx.fillText(seg.label, x + 2, ROW_HEIGHT + ROW_HEIGHT * row)
-    lastRight = x + width
-  }
-
+  // Sync label strip scroll with waveform scroll
   ws.on('scroll', (visibleStartTime) => {
-    document.getElementById(labelScrollId).scrollLeft = visibleStartTime * MIN_PX_PER_SEC
+    document.getElementById('label-scroll').scrollLeft = visibleStartTime * MIN_PX_PER_SEC
   })
 })
 
-// wsHarmony.on('ready', () => {
-//   document.getElementById('play-button').disabled = false
-//   document.getElementById('play-button').onclick = () => wsHarmony.playPause()
-
-//   // colored regions — no content, labels handled by canvas
-//   for (const seg of segments) {
-//     regionsHarmony.addRegion({
-//       start:  seg.start,
-//       end:    seg.end,
-//       color:  triadColor(seg.triad),
-//       drag:   false,
-//       resize: false,
-//     })
-//   }
-
-//   // draw labels on canvas with greedy non-overlap placement
-//   const canvas = document.getElementById('harmony-label-canvas');
-//   canvas.width  = Math.ceil(duration * MIN_PX_PER_SEC)
-//   canvas.height = HEIGHT
-//   const ctx     = canvas.getContext('2d')
-//   ctx.font      = LABEL_FONT
-//   ctx.fillStyle = 'rgba(0, 0, 0)'
-
-//   let lastRight = 0
-//   let shift = -1
-
-//   const measure = document.createElement('canvas').getContext('2d')
-//   measure.font = LABEL_FONT
-
-//   for (const seg of segments) {
-//     const start = seg.start * MIN_PX_PER_SEC
-//     const width = measure.measureText(seg.triad).width
-//     const end   = seg.end * MIN_PX_PER_SEC
-
-//     if (lastRight > start) {
-//       shift = shift + 1;
-//     } else {
-//       shift = 0;
-//     }
-
-//     ctx.fillText(seg.triad, start + 1, ROW_HEIGHT + ROW_HEIGHT * shift)
-//     lastRight = start + width
-//   }
-
-//   // sync label strip scroll with waveform scroll using WaveSurfer's 'scroll' event
-//   wsHarmony.on('scroll', (visibleStartTime, _visibleEndTime) => {
-//     document.getElementById('harmony-label-scroll').scrollLeft =
-//       visibleStartTime * MIN_PX_PER_SEC
-//     }
-//   )
-// })
-
-// Playback control
+// playback control
 const playButton = document.getElementById('play-button')
-playButton.onclick = () => {
-  wsHarmony.playPause()
-  // Keep melody cursor in sync when the harmony lane drives playback
-  if (wsHarmony.isPlaying()) {
-    wsMelody.setTime(wsHarmony.getCurrentTime())
-    wsMelody.play()
-  } else {
-    wsMelody.pause()
-  }
-}
+playButton.onclick = () => ws.playPause()
 
-wsHarmony.on('play',   () => { playButton.textContent = 'Pause'; wsMelody.play()  })
-wsHarmony.on('pause',  () => { playButton.textContent = 'Play';  wsMelody.pause() })
-wsHarmony.on('finish', () => { playButton.textContent = 'Play';  wsMelody.pause() })
+ws.on('play',   () => playButton.textContent = 'Pause')
+ws.on('pause',  () => playButton.textContent = 'Play')
+ws.on('finish', () => playButton.textContent = 'Play')
 
-// Keep melody cursor synced during playback
-wsHarmony.on('timeupdate', (t) => wsMelody.setTime(t))
-
-// wsHarmony.on('play',  () => document.getElementById('play-button').textContent = 'Pause')
-// wsHarmony.on('pause', () => document.getElementById('play-button').textContent = 'Play')
-// wsHarmony.on('finish',() => document.getElementById('play-button').textContent = 'Play')
-
-// Destroy on unload
-window.addEventListener('beforeunload', () => {
-  wsHarmony.destroy()
-  wsMelody.destroy()
-})
+// destroy on unload
+window.addEventListener('beforeunload', () => ws.destroy())
 </script>
 </body>
 </html>
