@@ -42,19 +42,21 @@ def evaluate_harmony(chromagram, T, predictions, eps=EPS):
     }
 
 
-def evaluate_melody(waveform, sample_rate, hop_length):
+def evaluate_melody(waveform, sample_rate, params):
     """
     audio resynthesis + chromagram similarity for overall harmonic match,
     direct chroma/CQT similarity for framewise note activity,
     onset alignment and per-note salience for timing and note presence
+
+    To Do:
+        - add more parameters to PyIN (+onset) and cqt/cqt_frequencies
     """
     # Extract fundamental frequency (f0) using pYIN
-    hop_length = 512
     f0, voiced_flag, _ = librosa.pyin(
         waveform, sr=sample_rate,
-        hop_length=hop_length,
-        fmin=librosa.note_to_hz("E2"),
-        fmax=librosa.note_to_hz("E7"),
+        hop_length=params["hop_length"],
+        fmin=params["fmin"],
+        fmax=params["fmax"],
         fill_na=np.nan
     )
     # Onset alignment to compare detected note onsets to energy spikes
@@ -62,18 +64,18 @@ def evaluate_melody(waveform, sample_rate, hop_length):
     onset_env = librosa.onset.onset_strength(
         y=waveform,
         sr=sample_rate,
-        hop_length=hop_length
+        hop_length=params["hop_length"]
     )
     # Extract reference onsets from waveform
     reference_onsets = librosa.onset.onset_detect(
         onset_envelope=onset_env,
         sr=sample_rate,
-        hop_length=hop_length,
+        hop_length=params["hop_length"],
         backtrack=True,
         units="time"
     )
 
-    frame_time = hop_length / sample_rate  # Duration of one frame in seconds
+    frame_time = params["hop_length"] / sample_rate  # Duration of one frame in seconds
 
     onsets_times = []
     onsets_indices = []
@@ -112,10 +114,14 @@ def evaluate_melody(waveform, sample_rate, hop_length):
         librosa.cqt(
             waveform,
             sr=sample_rate,
-            hop_length=hop_length
+            hop_length=params["hop_length"]
         )
     )
-    freqs = librosa.cqt_frequencies(cqt.shape[0], fmin=librosa.note_to_hz("E2"), bins_per_octave=12)
+    freqs = librosa.cqt_frequencies(
+        cqt.shape[0],
+        fmin=params["fmin"],
+        bins_per_octave=params["bins_per_octave"]
+    )
 
     salience = []
     for i in onsets_indices:
@@ -123,7 +129,7 @@ def evaluate_melody(waveform, sample_rate, hop_length):
         pitch_energy = cqt[freq_bin, i]
         avg_energy = np.mean(cqt[:, i])
         salience.append(
-            pitch_energy / (avg_energy + 1e-9)
+            pitch_energy / (avg_energy + EPS)
         )
 
     return {
