@@ -10,7 +10,7 @@ from threading import Thread
 from multiprocessing import Process, Queue
 from time import sleep
 from utility import logging, chord_templates
-from utility.metrics import evaluate_harmony
+from utility.metrics import evaluate_harmony, evaluate_melody
 
 logging.basicConfig(
     level=logging.INFO,
@@ -21,22 +21,6 @@ logging.basicConfig(
 N_TRIALS = 260
 ARTIFACTS_DIR = "artifacts"
 LOGS_DIR = "logs"
-
-audio_file_path = Path("Time On My Hands.wav")
-
-if audio_file_path.is_file():
-    waveform, sample_rate = librosa.load(
-        audio_file_path.as_posix(),
-        sr=None,
-        mono=True  # downmix to mono
-    )
-    logging.info(f"Waveform: {waveform.shape} | Sample rate: {sample_rate:,}")
-else:
-    sys.exit(1)
-
-
-T, _ = chord_templates()
-logging.info(f"Template: {T.shape}")
 
 
 def _memory_watchdog(process, queue, limit_bytes):
@@ -60,7 +44,7 @@ def get_cqt_parameters(trial, n_chroma):
         "hop_length": trial.suggest_int("hop_length", 64, 65536, step=64),
         "n_octaves": trial.suggest_int("n_octaves", 4, 10, step=1),
         "bins_per_octave": trial.suggest_int("bins_per_octave", n_chroma, n_chroma * n_chroma, step=n_chroma),
-        "fmin": trial.suggest_float("fmin", 1.1, 100.1, step=0.1),
+        "fmin": trial.suggest_float("fmin", 1.1, 111.1, step=0.1),
         "norm": trial.suggest_categorical("norm", [np.inf, None]),
         "cqt_mode": trial.suggest_categorical("cqt_mode", ["full", "hybrid"]),
     }
@@ -95,7 +79,6 @@ def get_stft_parameters(trial):
         "ctroct": trial.suggest_float("ctroct", 2.0, 8.0, step=0.1),
         # "octwidth": trial.suggest_float("octwidth", 0.1, 4.9, step=0.1),
     }
-    print(params["window"])
     if params["center"]:
         params["pad_mode"] = trial.suggest_categorical("pad_mode", pad_modes)
     params["hop_length"] = min(params["hop_length"], params["n_fft"] // 2)
@@ -103,7 +86,7 @@ def get_stft_parameters(trial):
     return params
 
 
-def harmony_objective(trial, waveform, sample_rate, metric, cache):
+def harmony_objective(trial, waveform, sample_rate, metric, cache, T):
     """
     Optuna objective that tunes transformation parameters.
 
@@ -173,9 +156,9 @@ def harmony_objective(trial, waveform, sample_rate, metric, cache):
     return cache[key]["evals"][metric]
 
 
-def run_study(method: str, criterion: str) -> dict:
+def run_study(study_type: str, method: str, criterion: str, T) -> dict:
     cache = {"method": method}
-    study_name = f"harmony-{method}-{criterion}"
+    study_name = f"{study_type}-{method}-{criterion}"
     storage = optuna.storages.JournalStorage(
         optuna.storages.journal.JournalFileBackend(f"{LOGS_DIR}/{study_name}.log")
     )
@@ -199,13 +182,25 @@ def run_study(method: str, criterion: str) -> dict:
             f"running {remaining} more"
         )
 
-    study.optimize(
-        lambda trial: harmony_objective(
-            trial,
-            waveform, sample_rate, criterion, cache
-        ),
-        n_trials=remaining
-    )
+    if study_type == "harmony":
+        study.optimize(
+            lambda trial: harmony_objective(
+                trial,
+                waveform, sample_rate, criterion, cache, T
+            ),
+            n_trials=remaining
+        )
+    elif study_type == "melody":
+        study.optimize(
+            lambda trial: melody_objective(
+                trial,
+                waveform, sample_rate, criterion, cache, T
+            ),
+            n_trials=remaining
+        )
+    else:
+        logging.warning("Unknow study type")
+        return {None: None}
 
     best_trial = {
         "number": study.best_trial.number,
@@ -219,8 +214,31 @@ def run_study(method: str, criterion: str) -> dict:
 if __name__ == "__main__":
     Path(ARTIFACTS_DIR).mkdir(parents=True, exist_ok=True)
     Path(LOGS_DIR).mkdir(parents=True, exist_ok=True)
+
+    T, _ = chord_templates()
+
+    audio_file_path = Path("ll.wav")
+    if audio_file_path.is_file():
+        waveform, sample_rate = librosa.load(
+            audio_file_path.as_posix(),
+            sr=None,
+            mono=True  # downmix to mono
+        )
+        logging.info(f"Waveform: {waveform.shape} | Sample rate: {sample_rate:,}")
+    else:
+        sys.exit(1)
+
     criterion = "RMSE"
-    stft = run_study("stft", criterion)
+    stft = run_study("harmony", "stft", criterion, T)
     logging.info(f"stft: {stft}")
-    cqt = run_study("cqt", criterion)
+    cqt = run_study("harmony", "cqt", criterion, T)
     logging.info(f"cqt: {cqt}")
+
+    output = {
+        "audio_file_path": str(audio_file_path),
+        "criterion": criterion,
+        "stft": stft,
+        "cqt": cqt
+    }
+    with (Path(ARTIFACTS_DIR) / audio_file_path.stem).open("w") as file:
+        json.dump(output, file, indent=4)
