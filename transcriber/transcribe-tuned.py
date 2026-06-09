@@ -44,7 +44,7 @@ def get_cqt_parameters(trial, n_chroma):
         "hop_length": trial.suggest_int("hop_length", 64, 65536, step=64),
         "n_octaves": trial.suggest_int("n_octaves", 4, 10, step=1),
         "bins_per_octave": trial.suggest_int("bins_per_octave", n_chroma, n_chroma * n_chroma, step=n_chroma),
-        "fmin": trial.suggest_float("fmin", 1.1, 111.1, step=0.1),
+        "fmin": trial.suggest_float("fmin", 41.1, 211.1, step=0.1),
         "norm": trial.suggest_categorical("norm", [np.inf, None]),
         "cqt_mode": trial.suggest_categorical("cqt_mode", ["full", "hybrid"]),
     }
@@ -156,15 +156,47 @@ def harmony_objective(trial, waveform, sample_rate, metric, cache, T):
     return cache[key]["evals"][metric]
 
 
-def run_study(study_type: str, method: str, criterion: str, T) -> dict:
-    cache = {"method": method}
-    study_name = f"{study_type}-{method}-{criterion}"
+def melody_objective(trial, waveform, sample_rate, metric, cache):
+    """..."""
+    n_chroma = 12
+    params = {
+        "hop_length": trial.suggest_int("hop_length", 64, 65536, step=64),
+        "fmin": trial.suggest_float("fmin", 41.1, 211.1, step=0.1),
+        "fmax": trial.suggest_float("fmax", 2111.1, 3111.1, step=0.1),
+        "bins_per_octave": trial.suggest_int("bins_per_octave", n_chroma, n_chroma * n_chroma, step=n_chroma),
+    }
+
+    key = get_params_key(params)
+    if key in cache:
+        return cache[key]["evals"][metric]
+
+    try:
+        evals = evaluate_melody(waveform, sample_rate, params)
+    except librosa.util.exceptions.ParameterError:
+        logging.warning("Trial raised ParameterError; scoring as +inf")
+        return np.inf
+
+    logging.info(evals)
+    cache[key] = {
+        "params": params,
+        "evals": evals
+    }
+    return cache[key]["evals"][metric]
+
+
+def run_study(study_type: str, method: str, criterion: str, direction: str, T) -> dict:
+    if study_type == "melody":
+        cache = {}
+        study_name = f"{study_type}-{criterion}"
+    else:
+        cache = {"method": method}
+        study_name = f"{study_type}-{method}-{criterion}"
     storage = optuna.storages.JournalStorage(
         optuna.storages.journal.JournalFileBackend(f"{LOGS_DIR}/{study_name}.log")
     )
     study = optuna.create_study(
         study_name=study_name,
-        direction="minimize",
+        direction=direction,
         storage=storage,
         sampler=optuna.samplers.TPESampler(seed=2026),
         load_if_exists=True
@@ -194,7 +226,7 @@ def run_study(study_type: str, method: str, criterion: str, T) -> dict:
         study.optimize(
             lambda trial: melody_objective(
                 trial,
-                waveform, sample_rate, criterion, cache, T
+                waveform, sample_rate, criterion, cache
             ),
             n_trials=remaining
         )
@@ -228,17 +260,23 @@ if __name__ == "__main__":
     else:
         sys.exit(1)
 
-    criterion = "RMSE"
-    stft = run_study("harmony", "stft", criterion, T)
+    harmony_criterion, direction = "RMSE", "minimize"
+    stft = run_study("harmony", "stft", harmony_criterion, direction, T)
     logging.info(f"stft: {stft}")
-    cqt = run_study("harmony", "cqt", criterion, T)
+    cqt = run_study("harmony", "cqt", harmony_criterion, direction, T)
     logging.info(f"cqt: {cqt}")
+
+    melody_criterion, direction = "salience", "maximize"
+    melody = run_study("melody", "", melody_criterion, direction, T)
+    logging.info(f"melody: {melody}")
 
     output = {
         "audio_file_path": str(audio_file_path),
-        "criterion": criterion,
-        "stft": stft,
-        "cqt": cqt
+        "harmony-criterion": harmony_criterion,
+        "harmony-stft": stft,
+        "harmony-cqt": cqt,
+        "melody-criterion": melody_criterion,
+        "melody": melody
     }
     with (Path(ARTIFACTS_DIR) / audio_file_path.stem).open("w") as file:
         json.dump(output, file, indent=4)
