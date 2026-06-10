@@ -66,10 +66,8 @@ def get_stft_parameters(trial):
         "hamming", "hann", "lanczos", "nuttall", "parzen",
         "taylor", "triang", "tukey"
     ]
-    pad_modes = ["constant", "reflect", "edge"]
-
     params = {
-        "n_fft": trial.suggest_int("n_fft", 8, 65536 * 2, step=32),
+        "n_fft": trial.suggest_int("n_fft", 128, 65536 * 2, step=32),
         "hop_length": trial.suggest_int("hop_length", 64, 32768, step=64),
         "win_length": trial.suggest_int("win_length", 8, 32768, step=64),
         "norm": trial.suggest_categorical("norm", [np.inf, None]),
@@ -80,7 +78,7 @@ def get_stft_parameters(trial):
         # "octwidth": trial.suggest_float("octwidth", 0.1, 4.9, step=0.1),
     }
     if params["center"]:
-        params["pad_mode"] = trial.suggest_categorical("pad_mode", pad_modes)
+        params["pad_mode"] = trial.suggest_categorical("pad_mode", ["constant", "reflect", "edge"])
     params["hop_length"] = min(params["hop_length"], params["n_fft"] // 2)
     params["win_length"] = min(params["win_length"], params["n_fft"])
     return params
@@ -159,11 +157,36 @@ def harmony_objective(trial, waveform, sample_rate, metric, cache, T):
 def melody_objective(trial, waveform, sample_rate, metric, cache):
     """..."""
     n_chroma = 12
+    frame_step = 32
+
+    fmin = trial.suggest_float("fmin", 40.0, 115.0, step=0.1)
+    fmax = trial.suggest_float("fmax", 2000.0, 2200.0, step=0.1)
+
+    min_frame_length = ((sample_rate / fmin) // frame_step) * frame_step
+    max_frame_length = (min(65536, len(waveform)) // frame_step) * frame_step
+    print(max_frame_length, min_frame_length)
+    frame_length = trial.suggest_int(
+        "frame_length",
+        min_frame_length, max_frame_length,
+        step=frame_step
+    )
+
+    hop_divisor = trial.suggest_int("hop_divisor", 2, 8)
+    hop_length = max(1, frame_length // hop_divisor)
     params = {
-        "hop_length": trial.suggest_int("hop_length", 64, 65536, step=64),
-        "fmin": trial.suggest_float("fmin", 41.1, 211.1, step=0.1),
-        "fmax": trial.suggest_float("fmax", 2111.1, 3111.1, step=0.1),
-        "bins_per_octave": trial.suggest_int("bins_per_octave", n_chroma, n_chroma * n_chroma, step=n_chroma),
+        "frame_length": frame_length,
+        "hop_length": hop_length,
+        "fmin": fmin,
+        "fmax": fmax,
+        "resolution": trial.suggest_float("resolution", 0.01, 0.99, step=0.01),
+        "switch_prob": trial.suggest_float("switch_prob", 0.0, 1.0, step=0.01),
+        "bins_per_octave": trial.suggest_int(
+            "bins_per_octave",
+            n_chroma, n_chroma * n_chroma,
+            step=n_chroma
+        ),
+        "center": trial.suggest_categorical("center", [True, False]),
+        "pad_mode": trial.suggest_categorical("pad_mode", ["constant", "reflect", "edge"]),
     }
 
     key = get_params_key(params)
@@ -172,9 +195,10 @@ def melody_objective(trial, waveform, sample_rate, metric, cache):
 
     try:
         evals = evaluate_melody(waveform, sample_rate, params)
-    except librosa.util.exceptions.ParameterError:
+    except librosa.util.exceptions.ParameterError as e:
+        print(e)
         logging.warning("Trial raised ParameterError; scoring as +inf")
-        return np.inf
+        return 0.0
 
     logging.info(evals)
     cache[key] = {
@@ -260,23 +284,23 @@ if __name__ == "__main__":
     else:
         sys.exit(1)
 
-    harmony_criterion, direction = "RMSE", "minimize"
-    stft = run_study("harmony", "stft", harmony_criterion, direction, T)
-    logging.info(f"stft: {stft}")
-    cqt = run_study("harmony", "cqt", harmony_criterion, direction, T)
-    logging.info(f"cqt: {cqt}")
+    # harmony_criterion, direction = "RMSE", "minimize"
+    # stft = run_study("harmony", "stft", harmony_criterion, direction, T)
+    # logging.info(f"stft: {stft}")
+    # cqt = run_study("harmony", "cqt", harmony_criterion, direction, T)
+    # logging.info(f"cqt: {cqt}")
 
     melody_criterion, direction = "salience", "maximize"
     melody = run_study("melody", "", melody_criterion, direction, T)
     logging.info(f"melody: {melody}")
 
-    output = {
-        "audio_file_path": str(audio_file_path),
-        "harmony-criterion": harmony_criterion,
-        "harmony-stft": stft,
-        "harmony-cqt": cqt,
-        "melody-criterion": melody_criterion,
-        "melody": melody
-    }
-    with (Path(ARTIFACTS_DIR) / audio_file_path.stem).open("w") as file:
-        json.dump(output, file, indent=4)
+    # output = {
+    #     "audio_file_path": str(audio_file_path),
+    #     "harmony-criterion": harmony_criterion,
+    #     "harmony-stft": stft,
+    #     "harmony-cqt": cqt,
+    #     "melody-criterion": melody_criterion,
+    #     "melody": melody
+    # }
+    # with (Path(ARTIFACTS_DIR) / audio_file_path.stem).open("w") as file:
+    #     json.dump(output, file, indent=4)
