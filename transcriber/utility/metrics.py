@@ -52,11 +52,17 @@ def evaluate_melody(waveform, sample_rate, params):
         - add more parameters to PyIN (+onset) and cqt/cqt_frequencies
     """
     # Extract fundamental frequency (f0) using pYIN
+    # https://librosa.org/doc/0.11.0/generated/librosa.pyin.html
     f0, voiced_flag, _ = librosa.pyin(
-        waveform, sr=sample_rate,
+        y=waveform, sr=sample_rate,
+        # frame_length=params["frame_length"],
         hop_length=params["hop_length"],
         fmin=params["fmin"],
         fmax=params["fmax"],
+        resolution=params["resolution"],
+        switch_prob=params["switch_prob"],
+        center=params["center"],
+        pad_mode=params["pad_mode"],
         fill_na=np.nan
     )
     # Onset alignment to compare detected note onsets to energy spikes
@@ -114,7 +120,10 @@ def evaluate_melody(waveform, sample_rate, params):
         librosa.cqt(
             waveform,
             sr=sample_rate,
-            hop_length=params["hop_length"]
+            hop_length=params["hop_length"],
+            fmin=params["fmin"],
+            bins_per_octave=params["bins_per_octave"],
+            pad_mode=params["pad_mode"]
         )
     )
     freqs = librosa.cqt_frequencies(
