@@ -5,7 +5,7 @@ CHORDS = [f"{p}:{q}" for q in ("maj", "min") for p in PITCHES]
 EPS = 1e-9
 
 
-def chord_templates():
+def triad_templates():
     # 12-dim pitch-class templates for triads
     NP = len(PITCHES)
     I = np.arange(NP)
@@ -15,13 +15,14 @@ def chord_templates():
         "maj": [4, 7],
         "min": [3, 7],
         "dim": [3, 6],
-        "aug": [4, 8]
+        "aug": [4, 8],
+        "sus2": [2, 7],
+        "sus4": [5, 7],
     }
     for root in range(NP):
         for quality, v in S.items():
             c = np.isin(
-                I,
-                [(root) % NP, (root+v[0]) % NP, (root+v[1]) % NP]
+                I, [(root) % NP, (root + v[0]) % NP, (root + v[1]) % NP]
             ).astype(float)
             c /= np.linalg.norm(c) + EPS
             T.append(c)
