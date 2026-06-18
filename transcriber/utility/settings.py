@@ -5,7 +5,7 @@ CHORDS = [f"{p}:{q}" for q in ("maj", "min") for p in PITCHES]
 EPS = 1e-9
 
 
-def triad_templates():
+def triads_template():
     # 12-dim pitch-class templates for triads
     NP = len(PITCHES)
     I = np.arange(NP)
@@ -28,5 +28,5 @@ def triad_templates():
             T.append(c)
             L.append(f"{PITCHES[root]}:{quality}")
     T = np.stack(T, axis=0)
-    assert T.shape == (48, 12)
+    assert T.shape == (72, 12)
     return T, L

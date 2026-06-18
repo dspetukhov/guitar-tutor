@@ -1,8 +1,9 @@
 import logging
-from .settings import chord_templates
+
+from .settings import triads_template
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S"
+    datefmt="%Y-%m-%d %H:%M:%S",
 )
