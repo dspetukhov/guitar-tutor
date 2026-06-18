@@ -24,7 +24,7 @@ def _stft_worker(queue, y, sr, n_chroma, **kwargs):
     queue.put(chromagram)
 
 
-def _get_cqt_parameters(trial, n_chroma):
+def _suggest_cqt_parameters(trial, n_chroma):
     return {
         "hop_length": trial.suggest_int("hop_length", 64, 65536, step=64),
         "n_octaves": trial.suggest_int("n_octaves", 4, 10, step=1),
@@ -37,12 +37,24 @@ def _get_cqt_parameters(trial, n_chroma):
     }
 
 
-def _get_hcqt_parameters(trial):
+def _suggest_hcqt_parameters(trial, n_chroma):
     """Baseline needs testing."""
-    return None
+    return {
+        "hop_length": trial.suggest_int("hop_length", 64, 65536, step=64),
+        "n_bins": trial.suggest_int(
+            "n_bins", n_chroma, n_chroma * n_chroma, step=n_chroma
+        ),
+        # "harmonics"
+        "bins_per_octave": 36,
+        # trial.suggest_int(
+        #     "bins_per_octave", n_chroma, n_chroma * n_chroma, step=n_chroma
+        # ),
+        "fmin": trial.suggest_float("fmin", 41.1, 211.1, step=0.1),
+        "norm": trial.suggest_categorical("norm", [np.inf, None]),
+    }
 
 
-def _get_stft_parameters(trial):
+def _suggest_stft_parameters(trial):
     window_types = [
         "barthann",
         "bartlett",
@@ -82,46 +94,94 @@ def _get_stft_parameters(trial):
     return params
 
 
-def get_parameters(trial, extractor, **kwargs):
+def suggest_parameters(trial, extractor, **kwargs):
     if extractor.lower() == "stft":
-        return _get_stft_parameters(trial)
+        return _suggest_stft_parameters(trial)
     elif extractor.lower() == "cqt":
-        return _get_cqt_parameters(trial, **kwargs)
+        return _suggest_cqt_parameters(trial, **kwargs)
     elif extractor.lower() == "hcqt":
-        return _get_hcqt_parameters(trial)
+        return _suggest_hcqt_parameters(trial, **kwargs)
     else:
         logging.warning(f"There is no such feature extraction method: {extractor}")
         return {}
 
 
+def _extract_stft_features(waveform, sample_rate, n_chroma, params):
+    queue = Queue()
+    process = Process(
+        target=_stft_worker,
+        args=(queue, waveform, sample_rate, n_chroma),
+        kwargs=params,
+    )
+    process.start()
+    Thread(target=_memory_watchdog, args=(process, queue, 1024**3), daemon=True).start()
+    features = queue.get()
+
+    process.join(timeout=2)
+    if process.is_alive():
+        process.terminate()
+        process.join()
+
+    if features is None:
+        return []
+
+
+def _extract_hcqt_features(waveform, sample_rate, n_chroma, params):
+    # --- Compute HCQT: stack CQTs at each harmonic multiple of fmin ---
+    # Result shape: (H, F, T) where H=harmonics, F=frequency bins, T=time frames
+    hcqt_layers = []
+    for h in params["harmonics"]:
+        cqt_magnitude = np.abs(
+            librosa.cqt(
+                waveform,
+                sr=sample_rate,
+                fmin=params["fmin"] * h,
+                n_bins=params["n_bins"],
+                bins_per_octave=params["bins_per_octave"],
+                hop_length=params["hop_length"],
+            )
+        )
+        hcqt_layers.append(cqt_magnitude)
+        logging.info(f"CQT harmonic h={h}: shape {cqt_magnitude.shape}")
+
+    hcqt = np.stack(hcqt_layers, axis=0)  # (H, F, T)
+    logging.info(f"HCQT tensor: {hcqt.shape}")
+
+    # --- Pitch salience map: average across harmonic axis -> (F, T) ---
+    salience = np.mean(hcqt, axis=0)  # (F, T)
+
+    # Normalize each time frame to [0, 1] to suppress level differences
+    frame_max = salience.max(axis=0, keepdims=True)
+    frame_max[frame_max == 0] = 1.0  # avoid division by zero
+    salience = salience / frame_max
+    logging.info(f"Salience map: {salience.shape}")
+    n_frames = salience.shape[1]
+
+    # --- Triad / harmony detection ---
+    # Fold the F salience bins into 12-bin chroma by summing bins that share the same pitch class
+    n_chroma = 12
+    chroma = np.zeros((n_chroma, n_frames))
+    for k in range(params["n_bins"]):
+        pitch_class = k % n_chroma
+        chroma[pitch_class, :] += salience[k, :]
+
+    # Normalize chroma columns to unit L∞ norm (matches transcribe.py convention)
+    chroma_max = chroma.max(axis=0, keepdims=True)
+    chroma_max[chroma_max == 0] = 1.0
+    chroma = chroma / chroma_max
+    logging.info(f"Chroma (from HCQT): {chroma.shape}")
+    return chroma
+
+
 def extract_features(extractor, waveform, sample_rate, n_chroma, params):
     if extractor.lower() == "stft":
-        queue = Queue()
-        process = Process(
-            target=_stft_worker,
-            args=(queue, waveform, sample_rate, n_chroma),
-            kwargs=params,
-        )
-        process.start()
-        Thread(
-            target=_memory_watchdog, args=(process, queue, 1024**3), daemon=True
-        ).start()
-        features = queue.get()
-
-        process.join(timeout=2)
-        if process.is_alive():
-            process.terminate()
-            process.join()
-
-        if features is None:
-            return []
-
+        return _extract_stft_features(waveform, sample_rate, n_chroma, params)
     elif extractor.lower() == "cqt":
-        features = librosa.feature.chroma_cqt(
+        return librosa.feature.chroma_cqt(
             y=waveform, sr=sample_rate, n_chroma=n_chroma, **params
         )
     elif extractor.lower() == "hcqt":
-        return []
+        return _extract_hcqt_features(waveform, sample_rate, n_chroma, params)
     else:
-        logging.warning(f"There is no such feature extraction method: {extractor}")
-        return []
+        logging.warning(f"Not supported feature extraction method: {extractor}")
+        return np.array([])
