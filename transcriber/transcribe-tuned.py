@@ -1,37 +1,41 @@
-import sys
-import json
-import optuna
 import hashlib
-import numpy as np
-import librosa
-import psutil
+import json
+import sys
 from pathlib import Path
-from threading import Thread
-from multiprocessing import Process, Queue
-from time import sleep
-from utility import logging, chord_templates
+
+import librosa
+import numpy as np
+import optuna
+from utility import logging, triads_template
+from utility.extractor import extract_features, suggest_parameters
 from utility.metrics import evaluate_harmony, evaluate_melody
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S"
+    datefmt="%Y-%m-%d %H:%M:%S",
 )
 
 N_TRIALS = 260
 ARTIFACTS_DIR = "artifacts"
 LOGS_DIR = "logs"
 
+HARMONY_CRITERIA = {
+    "RMSE": "minimize",
+    "Cosine similarity": "maximize",
+    "L2 Distance": "maximize",
+    "Energy coverage": "maximize",
+}
+HARMONY_FEATURES = {
+    "STFT": "minimize",
+    "CQT": "maximize",
+    "HCQT": "maximize",
+}
 
-def _memory_watchdog(process, queue, limit_bytes):
-    p = psutil.Process(process.pid)
-    while process.is_alive():
-        if p.memory_info().rss > limit_bytes:
-            logging.warning("Terminating process: memory exceeded 1GB")
-            process.terminate()
-            break
-        sleep(0.1)  # Poll every 0.5 seconds
-    queue.put(None)
+MELODY_CRITERIA = {
+    "F1": "maximize",
+    "Salience": "maximize",
+}
 
 
 def get_params_key(params: dict) -> str:
@@ -39,52 +43,7 @@ def get_params_key(params: dict) -> str:
     return hashlib.md5(json.dumps(params, sort_keys=True).encode()).hexdigest()
 
 
-def get_cqt_parameters(trial, n_chroma):
-    return {
-        "hop_length": trial.suggest_int("hop_length", 64, 65536, step=64),
-        "n_octaves": trial.suggest_int("n_octaves", 4, 10, step=1),
-        "bins_per_octave": trial.suggest_int("bins_per_octave", n_chroma, n_chroma * n_chroma, step=n_chroma),
-        "fmin": trial.suggest_float("fmin", 41.1, 211.1, step=0.1),
-        "norm": trial.suggest_categorical("norm", [np.inf, None]),
-        "cqt_mode": trial.suggest_categorical("cqt_mode", ["full", "hybrid"]),
-    }
-
-
-def _stft_worker(queue, y, sr, n_chroma, **kwargs):
-    chromagram = librosa.feature.chroma_stft(
-        y=y, sr=sr, n_chroma=n_chroma,
-        **kwargs
-    )
-    queue.put(chromagram)
-
-
-def get_stft_parameters(trial):
-    window_types = [
-        "barthann", "bartlett", "blackman", "blackmanharris", "bohman",
-        "boxcar", "cosine", "exponential",
-        "flattop",
-        "hamming", "hann", "lanczos", "nuttall", "parzen",
-        "taylor", "triang", "tukey"
-    ]
-    params = {
-        "n_fft": trial.suggest_int("n_fft", 128, 65536 * 2, step=32),
-        "hop_length": trial.suggest_int("hop_length", 64, 32768, step=64),
-        "win_length": trial.suggest_int("win_length", 8, 32768, step=64),
-        "norm": trial.suggest_categorical("norm", [np.inf, None]),
-        "center": trial.suggest_categorical("center", [True, False]),
-        "base_c": trial.suggest_categorical("base_c", [True, False]),
-        "window": trial.suggest_categorical("window", window_types),
-        "ctroct": trial.suggest_float("ctroct", 2.0, 8.0, step=0.1),
-        # "octwidth": trial.suggest_float("octwidth", 0.1, 4.9, step=0.1),
-    }
-    if params["center"]:
-        params["pad_mode"] = trial.suggest_categorical("pad_mode", ["constant", "reflect", "edge"])
-    params["hop_length"] = min(params["hop_length"], params["n_fft"] // 2)
-    params["win_length"] = min(params["win_length"], params["n_fft"])
-    return params
-
-
-def harmony_objective(trial, waveform, sample_rate, metric, cache, T):
+def harmony_objective(trial, waveform, sample_rate, extractor, metric, cache, TT):
     """
     Optuna objective that tunes transformation parameters.
 
@@ -93,64 +52,29 @@ def harmony_objective(trial, waveform, sample_rate, metric, cache, T):
     - [Optional] HPSS before Chroma to isolate harmonic content (reduces drum bleed) in live recordings
     - [Optional] temporal smoothing with median filter or HMM/Viterbi to reduce jitter
     """
-    method = cache["method"]
     n_chroma = 12
 
-    if method == "cqt":
-        params = get_cqt_parameters(trial, n_chroma)
-    elif method == "stft":
-        params = get_stft_parameters(trial)
-    else:
+    params = suggest_parameters(trial, extractor, n_chroma=n_chroma)
+    if params is None:
         return np.inf
-
     key = get_params_key(params)
     if key in cache:
         return cache[key]["evals"][metric]
 
     try:
-        if method == "cqt":
-            chromagram = librosa.feature.chroma_cqt(
-                y=waveform, sr=sample_rate, n_chroma=n_chroma,
-                **params
-            )
-        elif method == "stft":
-            queue = Queue()
-            process = Process(
-                target=_stft_worker,
-                args=(queue, waveform, sample_rate, n_chroma),
-                kwargs=params
-            )
-            process.start()
-            Thread(
-                target=_memory_watchdog,
-                args=(process, queue, 1024**3),
-                daemon=True
-            ).start()
-            chromagram = queue.get()
-
-            process.join(timeout=2)
-            if process.is_alive():
-                process.terminate()
-                process.join()
-
-            if chromagram is None:
-                return np.inf
-        else:
-            return np.inf
-
+        features = extract_features(
+            extractor, waveform, sample_rate, n_chroma, **params
+        )
     except librosa.util.exceptions.ParameterError:
         logging.warning("Trial raised ParameterError; scoring as +inf")
         return np.inf
 
-    logging.info(f"Chromagram [{method}]: {chromagram.shape}")
+    logging.info(f"Features [{extractor}]: {features.shape}")
 
-    scores = T @ chromagram
+    scores = TT @ features
     predictions = np.argmax(scores, axis=0)
-    evals = evaluate_harmony(chromagram, T, predictions)
-    cache[key] = {
-        "params": params,
-        "evals": evals
-    }
+    evals = evaluate_harmony(features, TT, predictions)
+    cache[key] = {"params": params, "evals": evals}
     return cache[key]["evals"][metric]
 
 
@@ -162,13 +86,11 @@ def melody_objective(trial, waveform, sample_rate, metric, cache):
     fmin = trial.suggest_float("fmin", 40.0, 115.0, step=0.1)
     fmax = trial.suggest_float("fmax", 2000.0, 2200.0, step=0.1)
 
-    min_frame_length = ((sample_rate / fmin) // frame_step) * frame_step
+    min_frame_length = int(sample_rate / fmin / frame_step + 1) * frame_step
     max_frame_length = (min(65536, len(waveform)) // frame_step) * frame_step
-    print(max_frame_length, min_frame_length)
+    logging.info(min_frame_length)
     frame_length = trial.suggest_int(
-        "frame_length",
-        min_frame_length, max_frame_length,
-        step=frame_step
+        "frame_length", min_frame_length, max_frame_length, step=frame_step
     )
 
     hop_divisor = trial.suggest_int("hop_divisor", 2, 8)
@@ -181,12 +103,12 @@ def melody_objective(trial, waveform, sample_rate, metric, cache):
         "resolution": trial.suggest_float("resolution", 0.01, 0.99, step=0.01),
         "switch_prob": trial.suggest_float("switch_prob", 0.0, 1.0, step=0.01),
         "bins_per_octave": trial.suggest_int(
-            "bins_per_octave",
-            n_chroma, n_chroma * n_chroma,
-            step=n_chroma
+            "bins_per_octave", n_chroma, n_chroma * n_chroma, step=n_chroma
         ),
         "center": trial.suggest_categorical("center", [True, False]),
-        "pad_mode": trial.suggest_categorical("pad_mode", ["constant", "reflect", "edge"]),
+        "pad_mode": trial.suggest_categorical(
+            "pad_mode", ["constant", "reflect", "edge"]
+        ),
     }
 
     key = get_params_key(params)
@@ -196,15 +118,11 @@ def melody_objective(trial, waveform, sample_rate, metric, cache):
     try:
         evals = evaluate_melody(waveform, sample_rate, params)
     except librosa.util.exceptions.ParameterError as e:
-        print(e)
-        logging.warning("Trial raised ParameterError; scoring as +inf")
+        logging.warning(f"Trial raised ParameterError: {e}; scoring as 0.0")
         return 0.0
 
     logging.info(evals)
-    cache[key] = {
-        "params": params,
-        "evals": evals
-    }
+    cache[key] = {"params": params, "evals": evals}
     return cache[key]["evals"][metric]
 
 
@@ -223,7 +141,7 @@ def run_study(study_type: str, method: str, criterion: str, direction: str, T) -
         direction=direction,
         storage=storage,
         sampler=optuna.samplers.TPESampler(seed=2026),
-        load_if_exists=True
+        load_if_exists=True,
     )
 
     completed = 0
@@ -241,18 +159,16 @@ def run_study(study_type: str, method: str, criterion: str, direction: str, T) -
     if study_type == "harmony":
         study.optimize(
             lambda trial: harmony_objective(
-                trial,
-                waveform, sample_rate, criterion, cache, T
+                trial, waveform, sample_rate, criterion, cache, T
             ),
-            n_trials=remaining
+            n_trials=remaining,
         )
     elif study_type == "melody":
         study.optimize(
             lambda trial: melody_objective(
-                trial,
-                waveform, sample_rate, criterion, cache
+                trial, waveform, sample_rate, criterion, cache
             ),
-            n_trials=remaining
+            n_trials=remaining,
         )
     else:
         logging.warning("Unknow study type")
@@ -261,7 +177,7 @@ def run_study(study_type: str, method: str, criterion: str, direction: str, T) -
     best_trial = {
         "number": study.best_trial.number,
         "value": study.best_trial.value,
-        "params": study.best_trial.params
+        "params": study.best_trial.params,
     }
 
     return best_trial
@@ -271,14 +187,14 @@ if __name__ == "__main__":
     Path(ARTIFACTS_DIR).mkdir(parents=True, exist_ok=True)
     Path(LOGS_DIR).mkdir(parents=True, exist_ok=True)
 
-    T, _ = chord_templates()
+    TT, _ = triads_template()
 
-    audio_file_path = Path("ll.wav")
+    audio_file_path = Path("ll-slice.wav")
     if audio_file_path.is_file():
         waveform, sample_rate = librosa.load(
             audio_file_path.as_posix(),
             sr=None,
-            mono=True  # downmix to mono
+            mono=True,  # downmix to mono
         )
         logging.info(f"Waveform: {waveform.shape} | Sample rate: {sample_rate:,}")
     else:
@@ -287,20 +203,20 @@ if __name__ == "__main__":
     # harmony_criterion, direction = "RMSE", "minimize"
     # stft = run_study("harmony", "stft", harmony_criterion, direction, T)
     # logging.info(f"stft: {stft}")
-    # cqt = run_study("harmony", "cqt", harmony_criterion, direction, T)
+    # cqt = run_study("harmony", "cqt", harmony_criterion, direction, TT)
     # logging.info(f"cqt: {cqt}")
 
-    melody_criterion, direction = "salience", "maximize"
-    melody = run_study("melody", "", melody_criterion, direction, T)
-    logging.info(f"melody: {melody}")
+    # melody_criterion, direction = "salience", "maximize"
+    # melody = run_study("melody", "", melody_criterion, direction, T)
+    # logging.info(f"melody: {melody}")
 
     # output = {
     #     "audio_file_path": str(audio_file_path),
     #     "harmony-criterion": harmony_criterion,
     #     "harmony-stft": stft,
     #     "harmony-cqt": cqt,
-    #     "melody-criterion": melody_criterion,
-    #     "melody": melody
+    # "melody-criterion": melody_criterion,
+    # "melody": melody
     # }
     # with (Path(ARTIFACTS_DIR) / audio_file_path.stem).open("w") as file:
     #     json.dump(output, file, indent=4)
