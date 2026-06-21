@@ -170,7 +170,7 @@ def _extract_hcqt_features(waveform, sample_rate, n_chroma, params):
 
     # Fold the F salience bins into 12-bin chroma by summing bins that share the same pitch class
     features = np.zeros((n_chroma, salience.shape[1]))
-    for k in range(params["n_bins"]):
+    for k in range(n_bins):
         pitch_class = k % n_chroma
         features[pitch_class, :] += salience[k, :]
 
