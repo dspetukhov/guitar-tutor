@@ -152,7 +152,7 @@ def run_study(study_type: str, extractor: str, criterion: str, TT) -> dict:
             f"{completed}/{N_TRIALS} trials already done for {extractor}/{criterion},"
             f"running {remaining} more"
         )
-    default_return = np.inf if direction == "minimize" else -np.inf
+    default_return = float("inf") if direction == "minimize" else -float("inf")
     # if study_type == "harmony":
     study.optimize(
         lambda trial: harmony_objective(
@@ -201,7 +201,7 @@ if __name__ == "__main__":
     if len(sys.argv) == 2:
         config = load_config(Path(sys.argv[1]))
     else:
-        raise SystemExit("Usage: python main.py <config_file_path>")
+        raise SystemExit("Usage: python transcribe-una.py <config_file_path>")
 
     Path(ARTIFACTS_DIR).mkdir(parents=True, exist_ok=True)
     Path(LOGS_DIR).mkdir(parents=True, exist_ok=True)
