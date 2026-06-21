@@ -1,288 +1,143 @@
 """
 ROADMAP:
 
-To Dos:
-- improve triads detection (harmony lane/extractor)
-- implement note detection (melody lane/extractor) - time-stamped pitches for the dominant line (monophonic where possible)
-    - extract a single dominant melody line from guitar-heavy recordings;
-    - detect onsets, estimate pitch over time, and smooth;
-    - a naive “highest-energy band” melody tracker on the harmonic component is a useful baseline.
-
-How:
-- consider alternative based on Chroma STFT
-    https://medium.com/@oluyaled/detecting-musical-key-from-audio-using-chroma-feature-in-python-72850c0ae4b1
 - implement better features:
-    - harmonic CQT, spectral whitening, and per-frame normalization
+    - spectral whitening, and per-frame normalization
     - key-awareness: boost chords consistent with a running key estimate (major/minor) via a key -> chord prior
 - better temporal modeling
     - Hidden Markov Model: learn transition probabilities between chord classes and use Viterbi decoding
     - beat-synchronous features: average chroma/frames within beats to stabilize timing
-- bigger vocabulary
-    - add 7th, maj7, min7, sus2/4, power (5) chords by extending templates and priors
-    - back off to simpler labels when confidence is low (e.g., from G7 -> G:maj)
 - preprocessing for live recordings
   - HPSS is a must; optionally add noise gating and gentle EQ cuts around strong drum fundamentals
-  - consider music source separation to isolate harmonic stems prior to chord estimation (Spleeter or similar OSS)
-- use metrics for no reference case (e.g., weighted chord symbol recall, overlap ratio)
+  - music source separation to isolate harmonic stems prior to chord estimation (Spleeter or similar OSS)
+- metrics for no reference case (e.g., weighted chord symbol recall, overlap ratio)
 - augment via pitch-shift/time-stretch to cover all keys and tempos
 - if necessary iterate toward a CRNN-based deep model that ingests CQT or log-mel spectrograms and predicts chord classes per frame (might outperform templates on complex mixes)
 - [optional] export to MusicXML or simple chord charts for use in notation editors
 """
 
-import sys
 import json
-import numpy as np
-import librosa
+import sys
 from pathlib import Path
-from utility import logging, chord_templates
 
-audio_file_path = Path("Time On My Hands.wav")
+import librosa
+import numpy as np
+from utility import logging, triads_template
+from utility.extractor import extract_features
 
-if audio_file_path.is_file():
-    waveform, sample_rate = librosa.load(
-        audio_file_path.as_posix(),
-        sr=None,
-        mono=True
-    )
-    logging.info(f"Waveform: {waveform.shape} | Sample rate: {sample_rate:,}")
-else:
-    sys.exit(1)
+CRITERIA_DIRECTION = {
+    # Harmony
+    "RMSE": "minimize",
+    "Cosine similarity": "maximize",
+    "L2 Distance": "maximize",
+    "Energy coverage": "maximize",
+    # Melody
+    "F1": "maximize",
+    "Salience": "maximize",
+}
 
-T, L = chord_templates()
-logging.info(f"Template: {T.shape} | Labels: {L}")
 
-# Get harmony lane
-# hop_length = 28480
-# chroma = librosa.feature.chroma_cqt(
-#     y=waveform, sr=sample_rate,
-#     hop_length=hop_length,
-#     bins_per_octave=84
-# )
-# chroma = librosa.util.normalize(chroma, axis=0)
-# logging.info(f"Chroma: {chroma.shape}")
+def main(config):
+    TT, L = triads_template()
 
-# scores = T @ chroma  # raw estimates
+    # Identify best extractor based on criterion
+    by_criterion = {}
+    for record in config["harmony_lane"]:
+        by_criterion.setdefault(record["criterion"], []).append(record)
 
-# # Smooth predictions?
-# predictions = np.argmax(scores, axis=0)
-# frames = (np.arange(predictions.size) * hop_length / sample_rate)
+    best_per_criterion = {}
+    for criterion, records in by_criterion.items():
+        direction = CRITERIA_DIRECTION[criterion]
+        # For "minimize" - ascending (smallest first); for "maximize" - descending
+        records_sorted = sorted(
+            records,
+            key=lambda e: e["value"],
+            reverse=(direction == "maximize"),
+        )
+        best_per_criterion[criterion] = records_sorted[0]  # first = best
 
-# frame_time = hop_length / sample_rate  # Duration of one frame in seconds
-# current_note = None
-# start_time = 0
+    extractor, criterion, parameters = None, None, {}
+    for c, b in best_per_criterion.items():
+        if extractor is None:
+            extractor = b["extractor"]
+            criterion = c
+            parameters = b["parameters"]
+        print(
+            f"{c} ({CRITERIA_DIRECTION[c]}): "
+            f"best = {b['extractor']}  value = {b['value']:.6f}"
+        )
+        print(f"\tparams = {b['parameters']}")
 
-# harmony_segments = []
-# prediction = None
+    print(extractor, criterion, parameters)
 
-# # Merge segments
-# for p in range(len(predictions)):
-#     if predictions[p] != prediction:
-#         current_time = p * frame_time
-#         if prediction is not None:
-#             harmony_segments.append([
-#                 start_time,
-#                 current_time,
-#                 L[predictions[p]]
-#             ])
-#         prediction = predictions[p]
-#         start_time = current_time
+    audio_file_path = Path(config["audio_file"])
+    if audio_file_path.is_file():
+        waveform, sample_rate = librosa.load(
+            audio_file_path.as_posix(),
+            sr=None,
+            mono=True,  # downmix to mono
+        )
+        logging.info(f"Waveform: {waveform.shape} | Sample rate: {sample_rate:,}")
+    else:
+        raise SystemExit("Exit: audio file wasn't found")
 
-# Get melody lane
-# Extract fundamental frequency (f0) using pYIN
-hop_length = 512
-f0, voiced_flag, voiced_prob = librosa.pyin(
-    waveform, sr=sample_rate,
-    hop_length=hop_length,
-    fmin=librosa.note_to_hz("E2"),
-    fmax=librosa.note_to_hz("E7"),
-    fill_na=np.nan
-)
-
-# Clean the melody (replace unvoiced frames with NaN or 0)
-melody_hz = np.where(voiced_flag, f0, np.nan)  # np.where(condition, x, y)
-
-cqt = np.abs(
-    librosa.cqt(
+    n_chroma = 12
+    features = extract_features(
+        extractor,
         waveform,
-        sr=sample_rate,
-        hop_length=hop_length
+        sample_rate,
+        n_chroma,
+        parameters,
     )
-)
-print(cqt.shape, "cqt")
-freqs = librosa.cqt_frequencies(cqt.shape[0], fmin=librosa.note_to_hz("E2"), bins_per_octave=12)
-print(freqs.shape, freqs[:26], "freqs")
-frame_time = hop_length / sample_rate  # Duration of one frame in seconds
 
-onsets = []
-in_note = False
-for i, v in enumerate(voiced_flag):
-    # current_time = i * frame_time
-    if v and not in_note:
-        onsets.append(i)
-        in_note = True
-    elif not v and in_note:
-        in_note = False
+    logging.info(f"Features [{extractor} | {criterion}]: {features.shape}")
 
-print(onsets[:26], len(onsets), f0.shape)
+    scores = TT @ features
+    predictions = np.argmax(scores, axis=0)
 
-salience_results = []
-for o in onsets:
-    # frame = librosa.time_to_frames(onset, sr=sample_rate, hop_length=hop_length)
-    # frame = min(frame, cqt.shape[1] - 1)  # Prevent out-of-bounds
-    bin_idx = np.argmin(np.abs(freqs - f0[o]))
-    pitch_energy = cqt[bin_idx, o]
-    avg_energy = np.mean(cqt[:, o])
-    print(o, cqt.shape, freqs.shape, bin_idx)  # 13, 156, 189, 305, 400, 433, 487, 564
-    print(pitch_energy, avg_energy)
-    salience = pitch_energy / (avg_energy + 1e-9)
-    salience_results.append(salience)
+    frame_time = (
+        parameters["hop_length"] / sample_rate
+    )  # Duration of one frame in seconds
+    start_time = 0
+    harmony_segments = []
+    prediction = None
 
-print(np.mean(salience_results))
-print(len(salience_results))
+    # Merge segments
+    for p in range(len(predictions)):
+        if predictions[p] != prediction:
+            current_time = p * frame_time
+            if prediction is not None:
+                harmony_segments.append([start_time, current_time, L[predictions[p]]])
+            prediction = predictions[p]
+            start_time = current_time
 
-# Onset alignment and per-note salience for timing and note presence
-# Onset alignment
+    output = {
+        "audio_file": audio_file_path.as_posix(),
+        "sample_rate": sample_rate,
+        "duration": waveform.shape[0] / sample_rate,
+        "harmony_segments": harmony_segments,
+        "extractor": extractor,
+        "criterion": criterion,
+        "parameters": parameters,
+    }
 
-onset_env = librosa.onset.onset_strength(
-    y=waveform,
-    sr=sample_rate,
-    hop_length=hop_length
-)
+    with open(f"{audio_file_path.stem}.json", "w") as file:
+        json.dump(output, file, indent=4, ensure_ascii=False, sort_keys=True)
 
-# print(onset_env)
-print(onset_env.shape, "onset_env")
 
-# Extract reference onsets from waveform
-# onset_times = librosa.onset.onset_detect(
-#     onset_envelope=onset_env,
-#     sr=sample_rate,
-#     hop_length=hop_length,
-#     backtrack=True,
-#     units='time'
-# )
+def load_config(file_path):
+    if file_path.is_file():
+        with open(file_path, encoding="utf-8") as file:
+            config = json.load(file)
+            logging.info(f"Configuration loaded: {file_path}")
+            return config
+    else:
+        raise SystemExit("Exit: configuration file wasn't found")
 
-# # print(onset_frames)
-# print(onset_times.shape, "onset_times")  # 225
-# print(onset_times[:26])
 
-# frame_time = hop_length / sample_rate  # Duration of one frame in seconds
-
-# # Extract predicted onsets from PyIN transcription
-# onsets = []
-# in_note = False
-# for i, v in enumerate(voiced_flag):
-#     if v and not in_note:
-#         onset_time = librosa.frames_to_time(i, sr=sample_rate, hop_length=hop_length)
-#         onsets.append(onset_time)
-#         in_note = True
-#     elif not v and in_note:
-#         in_note = False
-#     # return np.array(onsets)
-
-# print(voiced_flag[:26])
-# print(onsets[:26])
-# print(voiced_flag.shape, len(onsets))  # 228
-
-# onsets = np.array(onsets)
-
-# matched_trans = set()
-# matched_audio = set()
-
-# for i, ref_onset in enumerate(onset_times):
-#     diffs = np.abs(onsets - ref_onset)
-#     idx = np.argmin(diffs)
-#     print(i, diffs.shape, idx)
-#     if diffs[idx] <= 0.05 and idx not in matched_trans:
-#         matched_trans.add(idx)
-#         matched_audio.add(i)
-# matches = len(matched_audio)
-
-# print(matches)
-
-# precision = matches / len(onsets) if len(onsets) > 0 else 0.0
-# recall = matches / len(onset_times) if len(onset_times) > 0 else 0.0
-# f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
-
-# print(precision, recall, f1)
-
-# onsets = []
-# in_note = False
-# for i, v in enumerate(voiced_flag):
-#     # current_time = i * frame_time
-#     if v and not in_note:
-#         onsets.append(i * frame_time)
-#         in_note = True
-#     elif not v and in_note:
-#         in_note = False
-
-# print(onsets[:26], len(onsets), sum(voiced_flag))
-
-# print(onsets)
-# print(onset_times.tolist())
-
-# from scipy.spatial.distance import euclidean
-# from fastdtw import fastdtw
-
-# Calculates the overall alignment distance regardless of length mismatches
-# dtw_distance, warp_path = fastdtw(arr1, arr2, dist=euclidean)
-
-# peak_values = onset_env[onset_times]  # possible only if `units` != 'time'
-# average_confidence_score = np.mean(peak_values)
-
-# print(len(peak_values))
-# print(average_confidence_score)  # might be used as a proxy metric
-
-# Per-note CQT salience ??
-
-# Direct chroma/CQT similarity
-
-# Convert continuous frequencies to MIDI note numbers
-# Clean up NaN values for the conversion step
-melody_midi = np.zeros_like(melody_hz)
-valid_mask = ~np.isnan(melody_hz)
-melody_midi[valid_mask] = librosa.hz_to_midi(melody_hz[valid_mask])
-melody_midi[~valid_mask] = np.nan  # Keep unvoiced segments as NaN
-
-print(f0, f0.shape)
-print(melody_hz[:10], melody_hz.shape)
-print(melody_midi[:10], melody_midi.shape)
-
-frame_time = hop_length / sample_rate  # Duration of one frame in seconds
-
-melody_segments = []
-note = None
-start_time = 0
-
-for n in range(len(melody_midi)):
-    current_time = n * frame_time
-    value = melody_midi[n]
-    rounded_note = None if np.isnan(value) else int(np.round(melody_midi[n]))
-    if rounded_note != note:
-        if note is not None:
-            if current_time - start_time > 0.005:  # Filter out noise shorter than 5ms
-                melody_segments.append([
-                    start_time,
-                    current_time,
-                    librosa.midi_to_note(note)
-                ])
-
-        # Start tracking the new state
-        note = rounded_note
-        start_time = current_time
-
-# To Do: implement as a part of auto-adjustment pipeline
-flatness = librosa.feature.spectral_flatness(y=waveform, hop_length=hop_length)
-print(flatness, "flatness")
-print(flatness.shape)
-print(len(melody_segments), len(melody_midi))
-
-# output = {
-#     "file_path": audio_file_path.resolve().as_posix(),
-#     "sample_rate": sample_rate,
-#     "duration": waveform.shape[0] / sample_rate,
-#     "harmony_segments": harmony_segments,
-#     "melody_segments": melody_segments
-# }
-
-# with open("test.json", "w") as file:
-#     json.dump(output, file, indent=4, ensure_ascii=False, sort_keys=True)
+if __name__ == "__main__":
+    if len(sys.argv) == 2:
+        config = load_config(Path(sys.argv[1]))
+        main(config)
+    else:
+        raise SystemExit("Usage: python transcribe.py <config_file_path>")
