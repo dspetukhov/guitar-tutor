@@ -42,8 +42,25 @@ def get_params_key(params: dict) -> str:
     return hashlib.md5(json.dumps(params, sort_keys=True).encode()).hexdigest()
 
 
+def synchronize_beats(beat_method: str, waveform, sample_rate, features, params):
+    if beat == "beat":
+        tempo, beat_frames = librosa.beat.beat_track(
+            y=y_percussive, sr=sample_rate, hop_length=params["hop_length"]
+        )
+    elif beat == "onset":
+        onset = librosa.onset.onset_detect(
+            y=waveform, sr=sample_rate, hop_length=params["hop_length"]
+        )
+    else:
+        logging.warning(f"No supported beat synchronization method: {beat}")
+
+    features = librosa.util.sync(features, beat_frames, aggregate=np.median, pad=True)
+
+    return features
+
+
 def harmony_objective(
-    trial, waveform, sample_rate, extractor, criterion, cache, TT, default_return
+    trial, waveform, sample_rate, extractor, criterion, beat, cache, TT, default_return
 ):
     """
     Optuna objective that tunes extractor parameters.
@@ -69,6 +86,8 @@ def harmony_objective(
         return default_return
 
     logging.info(f"Features [{extractor} | {criterion}]: {features.shape}")
+
+    features = synchronize_beats(beat, waveform, sample_rate, features, params)
 
     scores = TT @ features
     predictions = np.argmax(scores, axis=0)
@@ -125,7 +144,7 @@ def melody_objective(trial, waveform, sample_rate, metric, cache):
     return cache[key]["evals"][metric]
 
 
-def run_study(study_type: str, extractor: str, criterion: str, TT) -> dict:
+def run_study(study_type: str, extractor: str, criterion: str, beat: str, TT) -> dict:
     study_name = f"{study_type}-{extractor}-{criterion}".lower().replace(" ", "-")
     storage = optuna.storages.JournalStorage(
         optuna.storages.journal.JournalFileBackend(f"{LOGS_DIR}/{study_name}.log")
@@ -161,6 +180,7 @@ def run_study(study_type: str, extractor: str, criterion: str, TT) -> dict:
             sample_rate,
             extractor,
             criterion,
+            beat,
             cache,
             TT,
             default_return,
@@ -225,7 +245,8 @@ if __name__ == "__main__":
         for item in config["harmony_lane"]:
             extractor = item["extractor"]
             criterion = item["criterion"]
-            result = run_study("harmony", extractor, criterion, TT)
+            beat = item.get("beat")
+            result = run_study("harmony", extractor, criterion, beat, TT)
             output["harmony_lane"].append(
                 {
                     "extractor": extractor,

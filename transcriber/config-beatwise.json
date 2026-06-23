@@ -1,0 +1,9 @@
+{
+    "audio_file": "ll-slice.wav",
+    "harmony_lane": [
+        {"extractor": "CQT", "criterion": "RMSE", "beat": "beat"},
+        {"extractor": "HCQT", "criterion": "RMSE", "beat": "onset"},
+        {"extractor": "CQT", "criterion": "Cosine similarity", "beat": "beat"},
+        {"extractor": "HCQT", "criterion": "Cosine similarity", "beat": "onset"}
+    ]
+}
