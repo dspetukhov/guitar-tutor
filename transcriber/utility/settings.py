@@ -1,7 +1,6 @@
 import numpy as np
 
 PITCHES = "C C# D D# E F F# G G# A A# B".split()
-CHORDS = [f"{p}:{q}" for q in ("maj", "min") for p in PITCHES]
 EPS = 1e-9
 
 

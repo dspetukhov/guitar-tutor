@@ -1,6 +1,6 @@
 import logging
 
-from .settings import triads_template
+from .settings import PITCHES, triads_template
 
 logging.basicConfig(
     level=logging.INFO,

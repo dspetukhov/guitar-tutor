@@ -22,7 +22,7 @@ from pathlib import Path
 
 import librosa
 import numpy as np
-from utility import logging, triads_template
+from utility import PITCHES, logging, triads_template
 from utility.extractor import extract_features, synchronize_beats
 
 ARTIFACTS_DIR = "artifacts"
@@ -116,12 +116,19 @@ def main(config):
     harmony_segments = []
     prediction = None
 
+    triads_description = {}
+
     # Merge segments
     for p in range(len(predictions)):
         if predictions[p] != prediction:
             current_time = p * frame_time
             if prediction is not None:
-                harmony_segments.append([start_time, current_time, L[predictions[p]]])
+                label = L[predictions[p]]
+                if label not in triads_description:
+                    triads_description[label] = [
+                        PITCHES[p] for p in TT[predictions[p]].nonzero()[0]
+                    ]
+                harmony_segments.append([start_time, current_time, label])
             prediction = predictions[p]
             start_time = current_time
 
@@ -134,6 +141,7 @@ def main(config):
         "criterion": criterion,
         "beat": beat,
         "parameters": parameters,
+        "triads_description": triads_description,
     }
 
     artifact_file_path = Path(ARTIFACTS_DIR) / audio_file_path
