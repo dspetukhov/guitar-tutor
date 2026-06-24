@@ -1,0 +1,17 @@
+{
+    "audio_file": "ll-slice.wav",
+    "harmony_lane": [
+        {"extractor": "CQT", "criterion": "RMSE", "beat": null},
+        {"extractor": "HCQT", "criterion": "RMSE", "beat": null},
+        {"extractor": "CQT", "criterion": "RMSE", "beat": "beat"},
+        {"extractor": "HCQT", "criterion": "RMSE", "beat": "beat"},
+        {"extractor": "CQT", "criterion": "RMSE", "beat": "onset"},
+        {"extractor": "HCQT", "criterion": "RMSE", "beat": "onset"},
+        {"extractor": "CQT", "criterion": "Cosine similarity", "beat": null},
+        {"extractor": "HCQT", "criterion": "Cosine similarity", "beat": null},
+        {"extractor": "CQT", "criterion": "Cosine similarity", "beat": "beat"},
+        {"extractor": "HCQT", "criterion": "Cosine similarity", "beat": "beat"},
+        {"extractor": "CQT", "criterion": "Cosine similarity", "beat": "onset"},
+        {"extractor": "HCQT", "criterion": "Cosine similarity", "beat": "onset"}
+    ]
+}

@@ -42,42 +42,32 @@ def get_params_key(params: dict) -> str:
     return hashlib.md5(json.dumps(params, sort_keys=True).encode()).hexdigest()
 
 
-def synchronize_beats(beat_method: str, waveform, sample_rate, features, params):
-    if beat == "beat":
-        tempo, beat_frames = librosa.beat.beat_track(
-            y=y_percussive, sr=sample_rate, hop_length=params["hop_length"]
-        )
-    elif beat == "onset":
-        onset = librosa.onset.onset_detect(
-            y=waveform, sr=sample_rate, hop_length=params["hop_length"]
-        )
-    else:
-        logging.warning(f"No supported beat synchronization method: {beat}")
-
-    features = librosa.util.sync(features, beat_frames, aggregate=np.median, pad=True)
-
-    return features
-
-
 def harmony_objective(
     trial, waveform, sample_rate, extractor, criterion, beat, cache, TT, default_return
 ):
     """
-    Optuna objective that tunes extractor parameters.
+    Optuna objective to tune extractor parameters.
 
     To Do:
-    - beat-synchronous chroma as an alternative to frame-wise (current)
-    - [Optional] HPSS before Chroma to isolate harmonic content (reduces drum bleed) in live recordings
     - [Optional] temporal smoothing with median filter or HMM/Viterbi to reduce jitter
     """
     n_chroma = 12
+    percussive = None
 
     params = suggest_parameters(trial, extractor, n_chroma=n_chroma)
     if not params:
         return default_return
+    params["hpss"] = trial.suggest_categorical("hpss", [True, False])
     key = get_params_key(params)
     if key in cache:
         return cache[key]
+
+    if params["hpss"]:
+        # https://librosa.org/doc/latest/generated/librosa.effects.hpss.html
+        # [Optional for live recordings] Add more HPSS parameters to tune
+        waveform, percussive = librosa.effects.hpss(
+            y=waveform, hop_length=params["hop_length"]
+        )
 
     try:
         features = extract_features(extractor, waveform, sample_rate, n_chroma, params)
@@ -85,9 +75,11 @@ def harmony_objective(
         logging.warning(f"Trial raised ParameterError; scoring as {default_return}")
         return default_return
 
-    logging.info(f"Features [{extractor} | {criterion}]: {features.shape}")
+    features = synchronize_beats(
+        beat, percussive if params["hpss"] else waveform, sample_rate, features, params
+    )
 
-    features = synchronize_beats(beat, waveform, sample_rate, features, params)
+    logging.info(f"Features: {extractor} / {criterion} / {beat}: {features.shape}")
 
     scores = TT @ features
     predictions = np.argmax(scores, axis=0)
@@ -145,7 +137,9 @@ def melody_objective(trial, waveform, sample_rate, metric, cache):
 
 
 def run_study(study_type: str, extractor: str, criterion: str, beat: str, TT) -> dict:
-    study_name = f"{study_type}-{extractor}-{criterion}".lower().replace(" ", "-")
+    study_name = f"{study_type}-{extractor}-{criterion}-{beat}".lower().replace(
+        " ", "-"
+    )
     storage = optuna.storages.JournalStorage(
         optuna.storages.journal.JournalFileBackend(f"{LOGS_DIR}/{study_name}.log")
     )
@@ -154,8 +148,9 @@ def run_study(study_type: str, extractor: str, criterion: str, beat: str, TT) ->
     study = optuna.create_study(
         study_name=study_name,
         direction=direction,
-        storage=storage,
         sampler=optuna.samplers.TPESampler(seed=2026),
+        pruner=optuna.pruners.NopPruner(),
+        storage=storage,
         load_if_exists=True,
     )
 
@@ -245,17 +240,18 @@ if __name__ == "__main__":
         for item in config["harmony_lane"]:
             extractor = item["extractor"]
             criterion = item["criterion"]
-            beat = item.get("beat")
+            beat = item["beat"]
             result = run_study("harmony", extractor, criterion, beat, TT)
             output["harmony_lane"].append(
                 {
                     "extractor": extractor,
                     "criterion": criterion,
+                    "beat": beat,
                     "value": result["value"],
                     "parameters": result["params"],
                     "hash": get_params_key(result["params"]),
                 }
             )
 
-    with (Path(ARTIFACTS_DIR) / audio_file_path.stem).open("w") as file:
-        json.dump(output, file, indent=4)
+            with (Path(ARTIFACTS_DIR) / audio_file_path.stem).open("w") as file:
+                json.dump(output, file, indent=4)

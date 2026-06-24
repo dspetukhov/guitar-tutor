@@ -23,8 +23,9 @@ from pathlib import Path
 import librosa
 import numpy as np
 from utility import logging, triads_template
-from utility.extractor import extract_features
+from utility.extractor import extract_features, synchronize_beats
 
+ARTIFACTS_DIR = "artifacts"
 CRITERIA_DIRECTION = {
     # Harmony
     "RMSE": "minimize",
@@ -56,19 +57,18 @@ def main(config):
         )
         best_per_criterion[criterion] = records_sorted[0]  # first = best
 
-    extractor, criterion, parameters = None, None, {}
+    extractor, criterion, beat, parameters = None, None, None, {}
     for c, b in best_per_criterion.items():
         if extractor is None:
             extractor = b["extractor"]
             criterion = c
+            beat = b["beat"]
             parameters = b["parameters"]
         print(
             f"{c} ({CRITERIA_DIRECTION[c]}): "
-            f"best = {b['extractor']}  value = {b['value']:.6f}"
+            f"extractor = {b['extractor']} | beat = {b['beat']} | value = {b['value']:.6f}"
         )
         print(f"\tparams = {b['parameters']}")
-
-    print(extractor, criterion, parameters)
 
     audio_file_path = Path(config["audio_file"])
     if audio_file_path.is_file():
@@ -81,6 +81,12 @@ def main(config):
     else:
         raise SystemExit("Exit: audio file wasn't found")
 
+    percussive = None
+    if parameters["hpss"]:
+        waveform, percussive = librosa.effects.hpss(
+            y=waveform, hop_length=parameters["hop_length"]
+        )
+
     n_chroma = 12
     features = extract_features(
         extractor,
@@ -90,7 +96,15 @@ def main(config):
         parameters,
     )
 
-    logging.info(f"Features [{extractor} | {criterion}]: {features.shape}")
+    features = synchronize_beats(
+        beat,
+        percussive if parameters["hpss"] else waveform,
+        sample_rate,
+        features,
+        parameters,
+    )
+
+    logging.info(f"Features: {extractor} / {criterion} / {beat}: {features.shape}")
 
     scores = TT @ features
     predictions = np.argmax(scores, axis=0)
@@ -118,10 +132,14 @@ def main(config):
         "harmony_segments": harmony_segments,
         "extractor": extractor,
         "criterion": criterion,
+        "beat": beat,
         "parameters": parameters,
     }
 
-    with open(f"{audio_file_path.stem}.json", "w") as file:
+    artifact_file_path = Path(ARTIFACTS_DIR) / audio_file_path
+    with artifact_file_path.with_name(
+        artifact_file_path.stem + "-transcription.json"
+    ).open("w") as file:
         json.dump(output, file, indent=4, ensure_ascii=False, sort_keys=True)
 
 

@@ -188,11 +188,56 @@ def extract_features(extractor, waveform, sample_rate, n_chroma, params):
     if extractor.lower() == "stft":
         return _extract_stft_features(waveform, sample_rate, n_chroma, params)
     elif extractor.lower() == "cqt":
+        # https://librosa.org/doc/latest/generated/librosa.feature.chroma_cqt.html
         return librosa.feature.chroma_cqt(
-            y=waveform, sr=sample_rate, n_chroma=n_chroma, **params
+            y=waveform,
+            sr=sample_rate,
+            n_chroma=n_chroma,
+            hop_length=params["hop_length"],
+            n_octaves=params["n_octaves"],
+            bins_per_octave=params["bins_per_octave"],
+            fmin=params["fmin"],
+            norm=params["norm"],
+            cqt_mode=params["cqt_mode"],
         )
     elif extractor.lower() == "hcqt":
         return _extract_hcqt_features(waveform, sample_rate, n_chroma, params)
     else:
         logging.warning(f"Not supported feature extraction method: {extractor}")
         return np.array([])
+
+
+def synchronize_beats(beat_method: str | None, waveform, sample_rate, features, params):
+    """
+    To Do: add more parameters to tune for onset_strength / beat_track / onset_detect
+    """
+    if beat_method is None:
+        return features
+
+    # https://librosa.org/doc/0.11.0/generated/librosa.onset.onset_strength.html
+    onset_envelope = librosa.onset.onset_strength(
+        y=waveform, sr=sample_rate, hop_length=params["hop_length"]
+    )
+    if beat_method == "beat":
+        # https://librosa.org/doc/latest/generated/librosa.beat.beat_track.html
+        tempo, beat_frames = librosa.beat.beat_track(
+            y=waveform,
+            sr=sample_rate,
+            onset_envelope=onset_envelope,
+            hop_length=params["hop_length"],
+        )
+        logging.info(f"Estimated BPM: {tempo}")
+    elif beat_method == "onset":  # Useful for music with weak beats
+        # https://librosa.org/doc/0.11.0/generated/librosa.onset.onset_detect.html
+        beat_frames = librosa.onset.onset_detect(
+            y=waveform,
+            sr=sample_rate,
+            onset_envelope=onset_envelope,
+            hop_length=params["hop_length"],
+        )
+    else:
+        raise SystemExit(f"No supported beat synchronization method: {beat_method}")
+
+    features = librosa.util.sync(features, beat_frames, aggregate=np.median, pad=True)
+
+    return features
